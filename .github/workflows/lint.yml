@@ -56,4 +56,4 @@ jobs:
           HUSKY: 0
 
       - name: Lint commit messages
-        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose
+        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose --strict
