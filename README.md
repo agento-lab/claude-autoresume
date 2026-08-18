@@ -195,12 +195,14 @@ unresolved repo placeholder and that every shipped script is executable, either 
 which would silently break `curl | sh` for new users while every other check passed.
 
 Versioning is [`auto`](https://intuit.github.io/auto/) with the `conventional-commits`
-and `git-tag` plugins, so the version comes from commit types. Releases need a
-`GH_ACTIONS_WRITE` secret with write access, and the repo needs `auto`'s labels once:
+and `git-tag` plugins, so the bump comes from commit types — no release labels to
+maintain. `feat:` is a minor, `fix:` a patch, `BREAKING CHANGE` a major, and
+everything else (`ci:`, `docs:`, `chore:`) ships nothing. A merge that only touches
+tooling therefore ends with `Calculated version bump: none`, which is the correct
+outcome and not a failure.
 
-```sh
-GH_TOKEN=$(gh auth token) bunx auto create-labels
-```
+Releases need a `GH_ACTIONS_WRITE` secret with repo write access; it is inherited
+from the organisation.
 
 ### Commits
 
