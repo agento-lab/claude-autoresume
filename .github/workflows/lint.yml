@@ -1,0 +1,59 @@
+name: lint
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  lint:
+    # Ubuntu is fine here: shellcheck, shfmt and `zsh -n` all behave the same,
+    # and none of them touch launchd or osascript. The test suite is the part
+    # that has to run on macOS.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install shell tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y zsh shellcheck jq
+          curl -fsSL "https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_linux_amd64" -o /usr/local/bin/shfmt
+          chmod +x /usr/local/bin/shfmt
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: 0
+
+      - name: Lint shell for consistent style
+        run: make lint
+
+  commits:
+    # Conventional Commits gate the release: `auto` reads commit types to decide
+    # the version bump, so a malformed message silently produces a wrong release.
+    # The commit-msg hook catches this locally; this catches --no-verify.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: 0
+
+      - name: Lint commit messages
+        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose

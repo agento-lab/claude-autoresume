@@ -1,0 +1,22 @@
+{
+  "plugins": [
+    "git-tag",
+    "conventional-commits",
+    "first-time-contributor",
+    [
+      "released",
+      {
+        "label": ":shipit:",
+        "prereleaseLabel": "🚧",
+        "message": "%TYPE went out with version: %VERSION",
+        "includeBotPrs": true
+      }
+    ]
+  ],
+  "owner": "agento-lab",
+  "repo": "claude-autoresume",
+  "name": "Git Bot",
+  "email": "kiong@agentolab.com",
+  "baseBranch": "main",
+  "prereleaseBranches": []
+}

@@ -1,0 +1,59 @@
+name: Scan
+on:
+  pull_request:
+  workflow_call:
+
+jobs:
+  scan_deps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: 0
+
+      # Nothing here ships. The tool is pure shell; every dependency is
+      # dev-only release and lint tooling. Gating the pipeline on a moderate
+      # advisory inside `auto` itself would deadlock releases -- the release
+      # tool cannot ship the fix for its own advisory. So: report everything,
+      # fail on high and critical.
+      - name: Report known vulnerabilities in dependencies
+        run: bun audit || true
+
+      - name: Fail on high or critical advisories
+        run: bun audit --audit-level=high
+
+  scan_installer:
+    # This project is distributed as `curl | sh`. A placeholder left in the
+    # installer, or a lost executable bit, breaks every new install silently --
+    # and nothing else in the pipeline would notice.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Fail on an unresolved repo placeholder
+        run: |
+          if grep -rn "OWNER/" install.sh README.md; then
+            echo "::error::install.sh or README still points at the OWNER placeholder"
+            exit 1
+          fi
+
+      - name: Fail if anything meant to be executable is not
+        run: |
+          missing=0
+          for f in install.sh uninstall.sh scripts/lint.sh test/run.sh bin/*; do
+            if [ ! -x "$f" ]; then
+              echo "::error file=$f::not executable — a piped install would fail on this"
+              missing=1
+            fi
+          done
+          exit $missing

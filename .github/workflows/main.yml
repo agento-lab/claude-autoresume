@@ -1,0 +1,27 @@
+name: Main
+
+permissions:
+  id-token: write
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+    secrets: inherit
+  test:
+    uses: ./.github/workflows/test.yml
+    secrets: inherit
+  scan:
+    uses: ./.github/workflows/scan.yml
+    secrets: inherit
+  release:
+    needs: [lint, test, scan]
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

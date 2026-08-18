@@ -2,7 +2,7 @@
 #
 # claude-autoresume installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/OWNER/claude-autoresume/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/agento-lab/claude-autoresume/main/install.sh | sh
 #
 # or, from a checkout:
 #
@@ -13,7 +13,7 @@
 #
 set -eu
 
-REPO="${CLAUDE_AUTORESUME_REPO:-OWNER/claude-autoresume}"
+REPO="${CLAUDE_AUTORESUME_REPO:-agento-lab/claude-autoresume}"
 BRANCH="${CLAUDE_AUTORESUME_BRANCH:-main}"
 PREFIX="${CLAUDE_AUTORESUME_PREFIX:-$HOME/.local/share/claude-autoresume}"
 BINDIR="${CLAUDE_AUTORESUME_BINDIR:-$HOME/.local/bin}"
@@ -55,10 +55,6 @@ if [ -n "$SELF_DIR" ] && [ -d "$SELF_DIR/bin" ] && [ -d "$SELF_DIR/lib" ]; then
     SRC="$SELF_DIR"
     say "installing from checkout: $SRC"
 else
-    case "$REPO" in
-        OWNER/*) die "piped install needs a real repo. Set it explicitly:
-    curl -fsSL <url>/install.sh | CLAUDE_AUTORESUME_REPO=you/claude-autoresume sh" ;;
-    esac
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT INT TERM
     say "downloading $REPO@$BRANCH"

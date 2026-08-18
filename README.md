@@ -170,6 +170,38 @@ Two bugs here came from `set -o pipefail` plus `grep -q` — grep exits on the f
 match, the writer takes SIGPIPE, and the pipeline reports 141. If you find yourself
 writing `cmd | grep -q`, don't.
 
+### CI and releases
+
+Every merge to `main` runs `.github/workflows/main.yml`, which fans out to reusable
+workflows and ends in a release:
+
+```
+push to main ─┬─► lint   (shellcheck + shfmt + zsh -n, commit messages)
+              ├─► test   (full install/uninstall suite, macOS runner)
+              └─► scan   (dependency advisories, installer sanity)
+                      └─► release  (auto shipit — tag + GitHub release + CHANGELOG)
+```
+
+Each of `lint`, `test` and `scan` also runs on its own for pull requests.
+
+`test` is on a macOS runner and cannot move: the code under test uses launchd,
+osascript, BSD `stat -f` / `date -r` and `sed -i ''`. The others run on Ubuntu.
+
+`scan` checks two things that nothing else would catch. Dependency advisories are
+reported in full but only **high and critical** fail the build — every dependency
+here is dev-only release tooling, nothing ships to users, and gating on a moderate
+advisory inside `auto` would deadlock releases. It also asserts the installer has no
+unresolved repo placeholder and that every shipped script is executable, either of
+which would silently break `curl | sh` for new users while every other check passed.
+
+Versioning is [`auto`](https://intuit.github.io/auto/) with the `conventional-commits`
+and `git-tag` plugins, so the version comes from commit types. Releases need a
+`GH_ACTIONS_WRITE` secret with write access, and the repo needs `auto`'s labels once:
+
+```sh
+GH_TOKEN=$(gh auth token) bunx auto create-labels
+```
+
 ### Commits
 
 [Conventional Commits](https://www.conventionalcommits.org), enforced by a
