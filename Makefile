@@ -1,46 +1,105 @@
-# claude-autoresume
-#
-# The code is shell, so there is nothing to build. This exists to make the
-# development loop and the toolchain one command each.
+.PHONY: help setup check-system install-deps setup-git-hooks dev lint lint-fix fmt security test ci install uninstall status logs update clean
 
-SHELL := /bin/sh
+# Colors for output
+GREEN = \033[0;32m
+YELLOW = \033[1;33m
+RED = \033[0;31m
+BLUE = \033[0;34m
+NC = \033[0m # No Color
+
+# Default target
 .DEFAULT_GOAL := help
 
 REPO := $(shell pwd)
 
-.PHONY: help setup dev lint fmt test install uninstall status logs clean
+# Tools this repo cannot work without. Format: <command>:<how to get it>
+REQUIRED_TOOLS := bun:asdf zsh:preinstalled-on-macos jq:brew shellcheck:asdf shfmt:asdf
 
-help: ## Show this help
-	@printf '\n\033[1mclaude-autoresume\033[0m\n\n'
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
-		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
-	@printf '\n'
+help: ## Show this help message
+	@echo "$(BLUE)claude-autoresume Development Commands$(NC)"
+	@echo ""
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  $(GREEN)%-15s$(NC) %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@echo ""
 
-setup: ## Install the toolchain (asdf tools + bun deps + git hooks)
-	@printf '\033[1m→ toolchain\033[0m\n'
+setup: check-system install-deps setup-git-hooks ## Complete development environment setup
+	@echo ""
+	@echo "$(GREEN)🎉 Setup complete!$(NC)"
+	@echo ""
+	@echo "$(BLUE)Next steps:$(NC)"
+	@echo "  make dev     # Install live from this checkout"
+	@echo "  make test    # Run the integration suite"
+	@echo "  make ci      # Everything CI runs"
+	@echo ""
+
+check-system: ## Check system prerequisites
+	@echo "$(BLUE)🔍 Checking system prerequisites...$(NC)"
+	@echo ""
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "$(RED)⚠️  macOS only — this uses launchd, osascript and BSD stat/date$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✅ macOS$(NC)"
+	@if ! command -v asdf >/dev/null 2>&1; then \
+		echo "$(YELLOW)⚠️  asdf not found — install it, or provide the tools yourself:$(NC)"; \
+		echo "  brew install asdf"; \
+	else \
+		echo "$(GREEN)✅ asdf installed$(NC)"; \
+	fi
+	@if ! command -v jq >/dev/null 2>&1; then \
+		echo "$(YELLOW)⚠️  jq not found (required at runtime, not just for dev): brew install jq$(NC)"; \
+	else \
+		echo "$(GREEN)✅ jq installed$(NC)"; \
+	fi
+
+install-deps: ## Install development dependencies (asdf tools + bun packages)
+	@echo ""
+	@echo "$(BLUE)📦 Installing dependencies...$(NC)"
+	@echo ""
 	@if command -v asdf >/dev/null 2>&1; then \
 		for p in bun shellcheck shfmt; do asdf plugin add $$p 2>/dev/null || true; done; \
 		asdf install; \
-	else \
-		printf '  asdf not found — install it, or provide bun, shellcheck and shfmt yourself\n'; \
+		echo "$(GREEN)✅ asdf tools installed$(NC)"; \
 	fi
-	@command -v jq >/dev/null 2>&1 || printf '  \033[33m!\033[0m jq is required at runtime: brew install jq\n'
-	@printf '\033[1m→ dependencies + git hooks\033[0m\n'
 	@bun install
-	@printf '\n  ready. \033[36mmake dev\033[0m to install from this checkout.\n\n'
+	@echo "$(GREEN)✅ Packages installed$(NC)"
+
+setup-git-hooks: ## Set up Git hooks with Husky
+	@echo ""
+	@echo "$(BLUE)🪝 Setting up Git hooks...$(NC)"
+	@echo ""
+	@if [ -d ".git" ]; then \
+		bun run prepare; \
+		echo "$(GREEN)✅ Git hooks configured with Husky$(NC)"; \
+	else \
+		echo "$(YELLOW)⚠️  Not a git repository. Skipping Git hooks setup.$(NC)"; \
+	fi
 
 dev: ## Install live from this checkout (edits take effect immediately)
+	@echo "$(BLUE)🔧 Installing from $(REPO)...$(NC)"
 	@CLAUDE_AUTORESUME_PREFIX=$(REPO) sh ./install.sh
-	@printf '  \033[2mthe service now points at %s — do not move or delete it\033[0m\n\n' "$(REPO)"
+	@echo "$(YELLOW)⚠️  The service now points at this checkout — do not move or delete it$(NC)"
 
-lint: ## shellcheck + shfmt on sh files, zsh -n on zsh files
+lint: ## Run code linter (shellcheck + shfmt on sh, zsh -n on zsh)
+	@echo "$(BLUE)🔍 Running code linter...$(NC)"
 	@./scripts/lint.sh
 
-fmt: ## Apply shfmt formatting in place
+lint-fix: ## Run code linter with auto-fix
+	@echo "$(BLUE)🔧 Running code linter with auto-fix...$(NC)"
 	@./scripts/lint.sh --fix
 
-test: ## Full install/uninstall integration suite in a throwaway HOME
+fmt: lint-fix ## Alias for lint-fix
+
+security: ## Run security vulnerability scanner
+	@echo "$(BLUE)🔒 Running security scanner...$(NC)"
+	@bun audit || true
+	@bun audit --audit-level=high
+	@echo "$(GREEN)✅ No high or critical advisories$(NC)"
+
+test: ## Run test suite (full install/uninstall in a throwaway HOME)
+	@echo "$(BLUE)🧪 Running test suite...$(NC)"
 	@./test/run.sh
+
+ci: lint security test ## Run CI checks (lint, security, test)
 
 install: ## Install normally, into ~/.local/share
 	@sh ./install.sh
@@ -54,6 +113,12 @@ status: ## Show what is armed right now
 logs: ## Tail the watcher log
 	@tail -f "$${CLAUDE_AUTORESUME_DIR:-$$HOME/.claude/autoresume}/watch.log"
 
-clean: ## Remove build/test leftovers
+update: ## Update dependencies
+	@echo "$(BLUE)🔄 Updating dependencies...$(NC)"
+	@bun update
+	@echo "$(GREEN)✅ Dependencies updated$(NC)"
+
+clean: ## Clean temporary files and caches
+	@echo "$(BLUE)🧹 Cleaning temporary files...$(NC)"
 	@rm -rf test/.sandbox node_modules
-	@printf '  cleaned\n'
+	@echo "$(GREEN)✅ Cleanup complete$(NC)"

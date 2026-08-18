@@ -140,16 +140,20 @@ install → uninstall round trip test.
 ## Development
 
 ```sh
-make setup   # asdf tools (bun, shellcheck, shfmt) + bun install + git hooks
-make dev     # install live from this checkout — edits take effect immediately
-make test    # full install/uninstall suite in a throwaway HOME
-make lint    # shellcheck + shfmt on sh, zsh -n on zsh
-make fmt     # apply formatting
-make help    # everything else
+make setup      # prerequisites + asdf tools + bun install + git hooks
+make dev        # install live from this checkout — edits take effect immediately
+make ci         # everything CI runs: lint, security, test
+make lint       # shellcheck + shfmt on sh, zsh -n on zsh
+make lint-fix   # apply formatting
+make help       # everything else
 ```
 
 `make dev` points the launchd agent and your status line at the working copy, so
 don't move or delete the checkout while it's active. `make install` does a normal copy.
+
+Work on a branch: a `pre-commit` hook refuses direct commits to `main`. That is not
+just hygiene here — `auto` derives releases from what lands on `main`, so going
+through a PR is what produces a changelog entry with something to point at.
 
 ### A note on linting two shells
 
