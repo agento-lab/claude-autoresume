@@ -1,0 +1,112 @@
+#!/usr/bin/env zsh
+#
+# claude-autoresume-sensor -- the status line, wrapped.
+#
+# Claude Code hands out subscription usage state (rate_limits.five_hour /
+# .seven_day, with resets_at as a Unix epoch) in exactly one place: the JSON it
+# pipes to the status line command. There is no rate-limit hook and nothing on
+# disk. So to know when a limit resets, we have to sit in that pipe.
+#
+# This script therefore takes over statusLine.command, records what it sees, and
+# hands the identical payload to whatever command was configured before,
+# printing its output unchanged. Your status line keeps working; it just has a
+# passenger now.
+#
+# Everything here is best-effort. A failure must never cost you a status line.
+#
+set -uo pipefail
+source "${0:A:h}/../lib/common.sh" 2>/dev/null
+
+input=$(cat)
+
+fields=("${(@f)$(printf '%s' "$input" | jq -r '
+    [ (.session_id // "")
+    , (.workspace.current_dir // .cwd // "")
+    , (.transcript_path // "")
+    , (if .rate_limits.five_hour.used_percentage == null then ""
+       else (.rate_limits.five_hour.used_percentage | tostring) end)
+    , (if .rate_limits.five_hour.resets_at == null then ""
+       else (.rate_limits.five_hour.resets_at | tostring) end)
+    , (if .rate_limits.seven_day.used_percentage == null then ""
+       else (.rate_limits.seven_day.used_percentage | tostring) end)
+    , (if .rate_limits.seven_day.resets_at == null then ""
+       else (.rate_limits.seven_day.resets_at | tostring) end)
+    , (.model.display_name // .model.id // "")
+    ] | .[]' 2>/dev/null)}")
+
+sid="${fields[1]:-}"        cwd="${fields[2]:-}"        transcript="${fields[3]:-}"
+five_pct="${fields[4]:-}"   five_reset="${fields[5]:-}"
+week_pct="${fields[6]:-}"   week_reset="${fields[7]:-}"
+model="${fields[8]:-}"
+
+# Which pane this session lives in, so a still-open session can be resumed where
+# it already is. tmux wins when present: it nests inside the others, and it is
+# the only one of the three that can be addressed without AppleScript.
+term_kind="" term_ident=""
+if [[ -n ${TMUX_PANE:-} ]]; then
+    term_kind=tmux term_ident=$TMUX_PANE
+elif [[ ${TERM_PROGRAM:-} == iTerm.app && -n ${ITERM_SESSION_ID:-} ]]; then
+    term_kind=iterm term_ident=${ITERM_SESSION_ID##*:}   # "w0t0p0:GUID" -> GUID
+elif [[ ${TERM_PROGRAM:-} == Apple_Terminal ]]; then
+    # Terminal.app tabs have no id, but they do expose a tty, and our parent
+    # (the claude process) is attached to the one we want.
+    t=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')
+    [[ -n $t ]] && { term_kind=apple_terminal; term_ident="/dev/$t" }
+fi
+
+if [[ -n $sid ]]; then
+    # The binding window is whichever one is spent. An exhausted weekly quota
+    # must arm on the 7-day reset: arming on the 5-hour one would fire every
+    # five hours into a limit that has not moved.
+    window=null reset=null armed=false
+    if [[ $week_pct =~ ^[0-9]+(\.[0-9]+)?$ && $week_reset =~ ^[0-9]+$ ]] \
+       && (( week_pct >= AUTORESUME_ARM_PCT )); then
+        window='"seven_day"' reset=$week_reset armed=true
+    elif [[ $five_pct =~ ^[0-9]+(\.[0-9]+)?$ && $five_reset =~ ^[0-9]+$ ]] \
+       && (( five_pct >= AUTORESUME_ARM_PCT )); then
+        window='"five_hour"' reset=$five_reset armed=true
+    fi
+
+    if mkdir -p "$STATE_DIR" 2>/dev/null; then
+        out="$STATE_DIR/${sid}.json" tmp="$STATE_DIR/.write.$$"
+        # Rewritten in full every render, so a window that rolls over while the
+        # session is open disarms itself with no extra bookkeeping.
+        {
+            printf '{"session_id":%s'      "$(ar_jstr "$sid")"
+            printf ',"cwd":%s'             "$(ar_jstr "$cwd")"
+            printf ',"transcript_path":%s' "$(ar_jstr "$transcript")"
+            printf ',"term_kind":%s'       "$(ar_jstr "$term_kind")"
+            printf ',"term_ident":%s'      "$(ar_jstr "$term_ident")"
+            printf ',"five_hour":{"used_percentage":%s,"resets_at":%s}' \
+                   "$(ar_jnum "$five_pct")" "$(ar_jnum "$five_reset")"
+            printf ',"seven_day":{"used_percentage":%s,"resets_at":%s}' \
+                   "$(ar_jnum "$week_pct")" "$(ar_jnum "$week_reset")"
+            printf ',"armed":%s,"armed_window":%s,"resets_at":%s' "$armed" "$window" "$reset"
+            printf ',"updated_at":%s}\n'   "$(ar_now)"
+        } > "$tmp" 2>/dev/null && mv -f "$tmp" "$out" 2>/dev/null
+        rm -f "$tmp" 2>/dev/null
+    fi
+fi
+
+# ---- hand the payload on, byte for byte -------------------------------------
+
+if [[ -n $AUTORESUME_WRAPPED ]]; then
+    printf '%s' "$input" | eval "$AUTORESUME_WRAPPED"
+    exit 0
+fi
+
+# Nothing to wrap: print something small rather than leave the line blank.
+DIM=$'\033[2m'; R=$'\033[0m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
+parts=()
+[[ -n $model ]] && parts+=("$model")
+if [[ $five_pct =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    p=${five_pct%.*}
+    if   (( p >= 80 )); then c=$RED
+    elif (( p >= 50 )); then c=$YELLOW
+    else                     c=$GREEN
+    fi
+    parts+=("${c}5h ${p}%${R}")
+fi
+[[ -n $cwd ]] && parts+=("${DIM}${cwd:t}${R}")
+sep="${DIM} | ${R}"
+printf '%s' "${(pj:$sep:)parts}"

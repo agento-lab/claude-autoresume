@@ -1,0 +1,147 @@
+#!/usr/bin/env zsh
+#
+# claude-autoresume-watch -- resume sessions whose usage window has rolled over.
+# Run once a minute by the launchd agent.
+#
+# The sensor records each session's reset time and flags it armed once a window
+# reads spent. This half waits for the clock, says so out loud, and puts the
+# work back in motion.
+#
+# Usage: claude-autoresume-watch [--dry-run]
+#
+set -uo pipefail
+source "${0:A:h}/../lib/common.sh" 2>/dev/null || exit 0
+source "${0:A:h}/../lib/terminals.sh" 2>/dev/null || exit 0
+
+DRYRUN="${CLAUDE_AUTORESUME_DRYRUN:-0}"
+[[ ${1:-} == --dry-run ]] && DRYRUN=1
+now=$(ar_now)
+
+[[ -e $AUTORESUME_DIR/DISABLED ]] && { ar_log "[skip] DISABLED present"; exit 0 }
+mkdir -p "$FIRED_DIR" "$MANUAL_DIR" 2>/dev/null || exit 0
+
+# ---- collect everything whose window has rolled over -------------------------
+#
+# Two sources. The sensor rewrites $STATE_DIR/<sid>.json wholesale on every
+# render, so a hand-armed session would be un-armed within seconds; manual arms
+# live in $MANUAL_DIR, which the sensor never touches.
+
+due=(); seen=()
+for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
+    armed=$(jq -r '.armed // false' "$f" 2>/dev/null) || continue
+    [[ $armed == true ]] || continue
+    reset=$(jq -r '.resets_at // empty' "$f" 2>/dev/null)
+    [[ $reset == <-> ]] || continue
+    (( now >= reset + AUTORESUME_GRACE )) || continue
+
+    # Validate here rather than at resume time: a dead entry counted during
+    # collection would inflate the spoken count and name a vanished directory.
+    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+    cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
+    if [[ -z $sid || -z $cwd || ! -d $cwd ]]; then
+        ar_log "[retire] session=${sid:-?} cwd=${cwd:-none} — directory is gone"
+        (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/" 2>/dev/null
+                          rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+        continue
+    fi
+
+    (( ${seen[(I)$sid]} )) && continue        # armed by both sensor and hand
+    seen+=("$sid")
+    due+=("$f")
+done
+
+if (( ! ${#due} )); then
+    # Housekeeping only on quiet ticks, so it never delays a resume.
+    find "$STATE_DIR"  -maxdepth 1 -name '*.json' -mtime +7  -delete 2>/dev/null
+    find "$MANUAL_DIR" -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
+    find "$FIRED_DIR"  -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
+    exit 0
+fi
+
+# One-at-a-time mode keeps the fresh window for the work you were last doing.
+if [[ $AUTORESUME_RESUME == latest ]] && (( ${#due} > 1 )); then
+    newest=$due[1] newest_m=0
+    for f in $due; do
+        m=$(stat -f %m "$f" 2>/dev/null || printf 0)
+        (( m > newest_m )) && { newest_m=$m; newest=$f }
+    done
+    for f in $due; do
+        [[ $f == $newest ]] && continue
+        ar_log "[held] session=$(jq -r .session_id "$f" 2>/dev/null) — resume=latest, left armed"
+    done
+    due=("$newest")
+fi
+
+# ---- announce, once for the whole batch --------------------------------------
+
+n=${#due}
+names=()
+for f in $due; do names+=("$(basename "$(jq -r '.cwd' "$f" 2>/dev/null)")"); done
+summary="${(j:, :)names}"
+plural="session"; (( n > 1 )) && plural="sessions"
+
+if (( DRYRUN )); then
+    print -r -- "[dry-run] would announce: limit reset, resuming $n $plural ($summary)"
+else
+    command -v say >/dev/null 2>&1 && { say "Claude limit reset. Resuming $n $plural." >/dev/null 2>&1 & }
+    osascript -e "display notification \"$(ar_osa_escape "$summary")\" with title \"Claude Code\" subtitle \"Limit reset — resuming $n $plural\"" >/dev/null 2>&1
+fi
+ar_log "[fire] $n $plural due: $summary"
+
+# ---- resume each one ---------------------------------------------------------
+
+for f in $due; do
+    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+    cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
+    transcript=$(jq -r '.transcript_path // empty' "$f" 2>/dev/null)
+    tkind=$(jq -r '.term_kind // empty' "$f" 2>/dev/null)
+    tident=$(jq -r '.term_ident // empty' "$f" 2>/dev/null)
+    window=$(jq -r '.armed_window // "?"' "$f" 2>/dev/null)
+
+    # Liveness always comes from the sensor's own file: a manual arm's mtime is
+    # when you armed it, which says nothing about whether Claude is still up.
+    live="$STATE_DIR/${sid}.json"
+    [[ -f $live ]] || live="$f"
+    age=$(( now - $(stat -f %m "$live" 2>/dev/null || printf 0) ))
+
+    route="" result="" mode="live-pane"
+    if (( age < AUTORESUME_FRESH )) && [[ -n $tkind && -n $tident ]]; then
+        route=pane
+        if (( DRYRUN )); then
+            result="dry-run"
+        else
+            result=$(ar_send_live "$tkind" "$tident" "$AUTORESUME_PROMPT")
+        fi
+        # A pane that has since been closed falls through to a fresh window.
+        [[ $result == sent || $result == dry-run ]] || {
+            ar_log "[pane-miss] session=$sid kind=$tkind result=$result — falling back to a new window"
+            route=""
+        }
+    fi
+
+    if [[ -z $route ]]; then
+        route=window
+        mode=$(ar_last_permission_mode "$transcript")
+        ar_valid_mode "$mode" || {
+            [[ -n $mode ]] && ar_log "[note] session=$sid unknown permissionMode '$mode' — using settings default"
+            mode="${mode:-default}"
+        }
+        kind=$(ar_pick_terminal "$AUTORESUME_TERMINAL")
+        # Prefer the terminal the session actually came from, when it is usable.
+        [[ $AUTORESUME_TERMINAL == auto && -n $tkind ]] && kind=$tkind
+        if (( DRYRUN )); then
+            result="dry-run: [$kind] $(ar_build_cmd "$cwd" "$sid" "$mode" "$AUTORESUME_PROMPT")"
+        else
+            result=$(ar_open_new "$kind" "$cwd" "$sid" "$mode" "$AUTORESUME_PROMPT")
+            [[ $result == opened* ]] || {
+                ar_log "[fallback] session=$sid $kind failed ($result) — going headless"
+                result=$(ar_open_new headless "$cwd" "$sid" "$mode" "$AUTORESUME_PROMPT")
+            }
+        fi
+        route="window:$kind"
+    fi
+
+    ar_log "[resume] session=$sid window=$window route=$route mode=$mode result=$result cwd=$cwd"
+    (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
+                      rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+done

@@ -1,0 +1,94 @@
+#!/usr/bin/env zsh
+#
+# claude-autoresume-arm -- arm a session by hand.
+#
+# The sensor arms automatically once a usage window reads 100%. This is the
+# override for when it doesn't: the window tops out a hair under, or you simply
+# want a resume at a time of your choosing.
+#
+# Usage:
+#   claude-autoresume-arm                    most recent session, at its own 5h reset
+#   claude-autoresume-arm --in 2h30m         ... at a time you pick
+#   claude-autoresume-arm --at 1787030000    ... at an exact epoch second
+#   claude-autoresume-arm --session <id>     target a specific session
+#   claude-autoresume-arm --list             what the sensor has recorded
+#   claude-autoresume-arm --disarm [--session <id>]
+#
+set -uo pipefail
+source "${0:A:h}/../lib/common.sh" 2>/dev/null || exit 1
+now=$(ar_now)
+
+sid="" at="" in_="" mode=arm
+while (( $# )); do
+    case $1 in
+        --session) sid=${2:-}; shift 2 ;;
+        --in)      in_=${2:-}; shift 2 ;;
+        --at)      at=${2:-}; shift 2 ;;
+        --disarm)  mode=disarm; shift ;;
+        --list)    mode=list; shift ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) print -u2 -- "unknown argument: $1"; exit 2 ;;
+    esac
+done
+
+files=("$STATE_DIR"/*.json(NOm))     # newest first
+(( ${#files} )) || { print -u2 -- "no sessions recorded yet in $STATE_DIR
+(the sensor writes one the moment any Claude session renders its status line)"; exit 1 }
+
+if [[ $mode == list ]]; then
+    for f in $files; do
+        [[ $(jq -r '.session_id // "null"' "$f" 2>/dev/null) == null ]] && continue
+        jq -r '"\(.session_id)  armed=\(.armed)  5h=\(.five_hour.used_percentage)%  7d=\(.seven_day.used_percentage)%  \(.cwd)"' "$f" 2>/dev/null
+    done
+    exit 0
+fi
+
+target=""
+if [[ -n $sid ]]; then
+    [[ -f $STATE_DIR/$sid.json ]] || { print -u2 -- "no state for session $sid"; exit 1 }
+    target="$STATE_DIR/$sid.json"
+else
+    target=$files[1]
+fi
+
+# Manual arms live in their own directory: the sensor rewrites its own copy from
+# scratch on every render, so an arm written there would be erased in seconds.
+mkdir -p "$MANUAL_DIR" 2>/dev/null
+tsid=$(jq -r '.session_id' "$target" 2>/dev/null)
+
+if [[ $mode == disarm ]]; then
+    rm -f "$MANUAL_DIR/${tsid}.json" 2>/dev/null && print -r -- "disarmed $tsid"
+    exit 0
+fi
+
+reset=""
+if [[ -n $at ]]; then
+    [[ $at == <-> ]] || { print -u2 -- "--at wants an epoch second"; exit 2 }
+    reset=$at
+elif [[ -n $in_ ]]; then
+    # =~ rather than a (#b) glob: backreferences need extendedglob, which is off
+    # by default in a script and would silently match nothing.
+    secs=0 rest=$in_
+    while [[ $rest =~ '^([0-9]+)([hms])' ]]; do
+        case $match[2] in
+            h) (( secs += match[1] * 3600 )) ;;
+            m) (( secs += match[1] * 60 )) ;;
+            s) (( secs += match[1] )) ;;
+        esac
+        rest=${rest#$MATCH}
+    done
+    (( secs > 0 )) || { print -u2 -- "--in wants something like 2h30m, 90m or 45s"; exit 2 }
+    reset=$(( now + secs ))
+else
+    reset=$(jq -r '.five_hour.resets_at // empty' "$target" 2>/dev/null)
+    [[ $reset == <-> ]] || { print -u2 -- "no 5-hour reset recorded for this session — pass --in or --at"; exit 1 }
+fi
+
+tmp=$(mktemp) && jq --argjson r "$reset" \
+    '.armed=true | .resets_at=$r | .armed_window="manual"' "$target" > "$tmp" \
+    && mv -f "$tmp" "$MANUAL_DIR/${tsid}.json"
+
+left=$(( reset - now )); (( left < 0 )) && left=0
+printf 'armed %s\n  resumes at %s (in %dh%02dm)\n  cwd %s\n' \
+    "$tsid" "$(date -r "$reset" '+%a %H:%M')" \
+    $(( left / 3600 )) $(( left % 3600 / 60 )) "$(jq -r .cwd "$target")"

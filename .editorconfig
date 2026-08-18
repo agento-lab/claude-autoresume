@@ -1,0 +1,26 @@
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8
+trim_trailing_whitespace = true
+
+# shfmt is configured to match: 4-space indent, indented case branches.
+[*.{sh,zsh}]
+indent_style = space
+indent_size = 4
+
+[bin/*]
+indent_style = space
+indent_size = 4
+
+[*.{json,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab
+
+[*.md]
+trim_trailing_whitespace = false

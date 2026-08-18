@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-autoresume</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__WATCH__</string>
+    </array>
+
+    <!-- launchd re-runs a missed StartInterval job on wake, which is what makes
+         "resume however late" work without scheduling a hardware wake. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__PATH__</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__STATE__/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__STATE__/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

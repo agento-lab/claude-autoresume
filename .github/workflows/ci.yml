@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    # macOS runner because the tool is macOS-only: launchd, osascript and BSD
+    # stat/date. The integration suite installs into a throwaway HOME.
+    runs-on: macos-latest
+    env:
+      HUSKY: 0 # hooks are for humans; CI runs the checks directly
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .tool-versions
+
+      - name: Install shell tooling
+        run: brew install shellcheck shfmt jq
+
+      - run: bun install --frozen-lockfile
+      - run: make lint
+      - run: make test
+
+  commits:
+    # Conventional Commits are enforced locally by the commit-msg hook; this
+    # catches anything pushed with --no-verify.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose

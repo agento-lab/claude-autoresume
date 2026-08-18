@@ -1,0 +1,4 @@
+{
+  "{bin/*,lib/*.sh,scripts/*.sh,test/*.sh,install.sh,uninstall.sh}": "./scripts/lint.sh",
+  "*.json": "./scripts/lint.sh"
+}

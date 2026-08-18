@@ -1,0 +1,11 @@
+# Repo-wide shellcheck settings.
+#
+# Only install.sh, uninstall.sh and the scripts/ and test/ helpers are checked:
+# everything under bin/ and lib/ is zsh, which shellcheck does not support. Those
+# are parsed with `zsh -n` instead (see scripts/lint.sh).
+
+# The installer is deliberately POSIX sh so `curl | sh` works anywhere.
+shell=sh
+
+# Sourcing is resolved at runtime from the install prefix, not from the repo.
+disable=SC1091

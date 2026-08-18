@@ -1,0 +1,26 @@
+{
+  "name": "claude-autoresume",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Resume Claude Code sessions the moment your subscription limit resets",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/agento-lab/claude-autoresume.git"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "scripts": {
+    "prepare": "husky",
+    "lint": "./scripts/lint.sh",
+    "fmt": "./scripts/lint.sh --fix",
+    "test": "./test/run.sh"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^21.2.2",
+    "@commitlint/config-conventional": "^21.2.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0"
+  }
+}

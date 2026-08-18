@@ -1,0 +1,3 @@
+# Conventional Commits, checked before the message is accepted.
+# e.g. fix(watch): stop grep -q reporting SIGPIPE as a missing service
+bunx commitlint --edit "$1"

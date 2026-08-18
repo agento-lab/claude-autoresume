@@ -1,0 +1,4 @@
+# The full integration suite installs into a throwaway HOME and uninstalls
+# again. It takes a few seconds and has caught real regressions in the
+# installer, so it runs before anything leaves the machine.
+make test

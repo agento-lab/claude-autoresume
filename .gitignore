@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+
+# test sandboxes
+/tmp/
+/test/.sandbox/
+
+# local editor noise
+*.swp
+.idea/
+.vscode/

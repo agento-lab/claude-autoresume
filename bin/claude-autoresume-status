@@ -1,0 +1,71 @@
+#!/usr/bin/env zsh
+#
+# claude-autoresume-status -- what is armed, what fired, and is the job alive.
+#
+set -uo pipefail
+source "${0:A:h}/../lib/common.sh" 2>/dev/null || exit 1
+now=$(ar_now)
+
+BOLD=$'\033[1m'; DIM=$'\033[2m'; R=$'\033[0m'
+GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'
+
+print -r -- "${BOLD}claude-autoresume${R}"
+
+# launchctl print rather than `list | grep -q`: grep exits on the first match,
+# the writer takes SIGPIPE, and under pipefail the whole pipeline reports 141 --
+# so the service always looked missing.
+if launchctl print "gui/$(id -u)/com.claude-autoresume" >/dev/null 2>&1; then
+    print -r -- "  service   ${GREEN}loaded${R}"
+else
+    print -r -- "  service   ${RED}not loaded${R}  ${DIM}launchctl bootstrap gui/\$UID ~/Library/LaunchAgents/com.claude-autoresume.plist${R}"
+fi
+
+if [[ -e $AUTORESUME_DIR/DISABLED ]]; then
+    print -r -- "  state     ${YELLOW}DISABLED${R}  ${DIM}rm $AUTORESUME_DIR/DISABLED to re-enable${R}"
+else
+    print -r -- "  state     ${GREEN}active${R}"
+fi
+print -r -- "  resume    ${AUTORESUME_RESUME}  ${DIM}terminal=${AUTORESUME_TERMINAL} prompt=\"${AUTORESUME_PROMPT}\"${R}"
+
+print -r -- ""
+print -r -- "${BOLD}sessions${R}"
+files=("$STATE_DIR"/*.json(NOm))
+manual=("$MANUAL_DIR"/*.json(NOm))
+if (( ! ${#files} && ! ${#manual} )); then
+    print -r -- "  ${DIM}none recorded yet${R}"
+else
+    # Manual arms first, so an armed session is not also listed as idle by the
+    # sensor's own copy of the same session.
+    shown=()
+    for f in $manual $files; do
+        eval "$(jq -r '@sh "sid=\(.session_id) armed=\(.armed) reset=\(.resets_at // 0) five=\(.five_hour.used_percentage // 0 | round) week=\(.seven_day.used_percentage // 0 | round) cwd=\(.cwd) win=\(.armed_window // "-") kind=\(.term_kind // "-")"' "$f" 2>/dev/null)"
+        [[ -z $sid || $sid == null ]] && continue
+        (( ${shown[(I)$sid]} )) && continue
+        shown+=("$sid")
+        short=${cwd:t}
+        if [[ $armed == true ]]; then
+            left=$(( reset - now ))
+            if (( left <= 0 )); then when="${GREEN}due now${R}"
+            else when="${YELLOW}in $(( left / 3600 ))h$(printf '%02d' $(( left % 3600 / 60 )))m${R}"
+            fi
+            printf '  %s %-22s %s %s\n' "${GREEN}●${R}" "$short" "$when" "${DIM}($win, $kind, 5h ${five}% / 7d ${week}%)${R}"
+        else
+            printf '  %s %-22s %s\n' "${DIM}○${R}" "$short" "${DIM}idle — 5h ${five}% / 7d ${week}% ($kind)${R}"
+        fi
+    done
+fi
+
+fired=("$FIRED_DIR"/*.json(NOm))
+if (( ${#fired} )); then
+    print -r -- ""
+    print -r -- "${BOLD}recently resumed${R}"
+    for f in ${fired[1,5]}; do
+        printf '  %s  %s\n' "$(date -r "$(stat -f %m "$f")" '+%b %d %H:%M')" "${DIM}$(jq -r .cwd "$f" 2>/dev/null)${R}"
+    done
+fi
+
+if [[ -s $LOG_FILE ]]; then
+    print -r -- ""
+    print -r -- "${BOLD}log${R} ${DIM}$LOG_FILE${R}"
+    tail -5 "$LOG_FILE" | sed 's/^/  /'
+fi
