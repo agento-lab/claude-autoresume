@@ -24,9 +24,32 @@ ar_tmux_alive() { command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/nu
 
 # ---- send into an existing pane ---------------------------------------------
 
+# A spent limit does not leave the session at a plain prompt. Claude Code puts up
+# a select menu -- internally `rate_limit_options_menu` -- offering to upgrade the
+# plan, add funds for usage credits, or stop and wait. Letters are ignored in a
+# select list and Enter takes whichever line is highlighted, so submitting blind
+# could pick an option that costs money.
+#
+# Two obvious defences were tried and both failed. Detecting the menu first does
+# not work: iTerm's `contents` returns the whole buffer rather than the visible
+# screen, so a menu that appeared once still matches forever and the session
+# would never resume again. Sending Escape ahead of the text does not work
+# either -- iTerm merges it with whatever follows, even across separate osascript
+# calls seconds apart, and ESC+"c" is then read as Meta-c, eating the first
+# character.
+#
+# What survives is the observation that the dangerous act is specifically Enter.
+# So by default the text is typed but not submitted: inert against a menu, and
+# one keypress from running at a prompt. The human presses Enter, and by then
+# they are looking at the screen and can see which of the two it is.
+#
+#   prefill  type the text, do not submit   (default)
+#   type     type and submit                (full automation, accepts the risk)
+#   notify   touch nothing
 ar_send_live() {
-    local kind=$1 ident=$2 text=$3
+    local kind=$1 ident=$2 text=$3 mode=${4:-${AUTORESUME_LIVE_PANE:-prefill}}
     [[ -n $ident ]] || { print -r -- unsupported; return 0 }
+    [[ $mode == notify ]] && { print -r -- skipped; return 0 }
     case $kind in
         tmux)
             ar_tmux_alive || { print -r -- notrunning; return 0 }
@@ -36,19 +59,28 @@ ar_send_live() {
             local -a panes
             panes=(${(f)"$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)"})
             (( ${panes[(I)$ident]} )) || { print -r -- notfound; return 0 }
-            tmux send-keys -t "$ident" "$text" Enter 2>/dev/null \
-                && print -r -- sent || print -r -- error
+            if [[ $mode == type ]]; then
+                tmux send-keys -t "$ident" "$text" Enter 2>/dev/null \
+                    && print -r -- sent || print -r -- error
+            else
+                tmux send-keys -t "$ident" "$text" 2>/dev/null \
+                    && print -r -- prefilled || print -r -- error
+            fi
             ;;
         iterm)
             ar_app_running iTerm2 || { print -r -- notrunning; return 0 }
+            # `newline NO` is what makes prefill possible: the text reaches the
+            # prompt without the return that would submit it.
+            local itermNL="" itermResult=sent
+            [[ $mode == type ]] || { itermNL=" newline NO"; itermResult=prefilled }
             osascript <<OSA 2>/dev/null || print -r -- error
 tell application "iTerm"
     repeat with w in windows
         repeat with t in tabs of w
             repeat with s in sessions of t
                 if id of s is "$(ar_osa_escape "$ident")" then
-                    tell s to write text "$(ar_osa_escape "$text")"
-                    return "sent"
+                    tell s to write text "$(ar_osa_escape "$text")"$itermNL
+                    return "$itermResult"
                 end if
             end repeat
         end repeat
@@ -60,6 +92,11 @@ OSA
         apple_terminal)
             # Terminal.app has no session id, but every tab exposes its tty and
             # the sensor records the one Claude was attached to.
+            #
+            # `do script` always appends a return, so typing without submitting
+            # is not possible here. Rather than submit blind into a menu that may
+            # be open, this degrades to leaving the pane alone.
+            [[ $mode == type ]] || { print -r -- unsupported-prefill; return 0 }
             ar_app_running Terminal || { print -r -- notrunning; return 0 }
             osascript <<OSA 2>/dev/null || print -r -- error
 tell application "Terminal"

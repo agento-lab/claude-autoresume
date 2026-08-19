@@ -143,6 +143,28 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+group "live-pane safety"
+# A spent limit can leave a select menu on screen whose options include paid
+# ones, and Enter takes whichever line is highlighted. Nothing may submit into a
+# live pane unless the user has explicitly opted in.
+# CLAUDE_AUTORESUME_CONFIG is pointed away from the sandbox on purpose: the
+# installed config.sh assigns AUTORESUME_LIVE_PANE outright, and a config file
+# is meant to win over the environment, so the env alone would not take here.
+probe() {
+    zsh -c "AUTORESUME_LIVE_PANE=$1
+            CLAUDE_AUTORESUME_CONFIG=/nonexistent
+            source '$REPO/lib/common.sh'
+            source '$REPO/lib/terminals.sh'
+            ar_send_live $2 some-ident 'continue' 2>/dev/null"
+}
+is "the default is prefill, not submit" \
+    "$(zsh -c "unset AUTORESUME_LIVE_PANE; CLAUDE_AUTORESUME_CONFIG=/nonexistent source '$REPO/lib/common.sh'; print -r -- \$AUTORESUME_LIVE_PANE")" \
+    "prefill"
+is "notify mode touches nothing" "$(probe notify tmux)" "skipped"
+is "Terminal.app cannot prefill, so it refuses rather than submitting blind" \
+    "$(probe prefill apple_terminal)" "unsupported-prefill"
+
+# -----------------------------------------------------------------------------
 group "hygiene"
 out=$("$SB/prefix/bin/claude-autoresume-arm" --list 2>&1)
 case "$out" in

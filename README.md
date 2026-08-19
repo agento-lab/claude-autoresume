@@ -96,6 +96,7 @@ touch ~/.claude/autoresume/DISABLED   # off, without uninstalling
 |---|---|---|
 | `AUTORESUME_RESUME` | `all` | `all` resumes every cut-off session; `latest` resumes only the most recent and leaves the rest armed |
 | `AUTORESUME_TERMINAL` | `auto` | `auto` reuses whichever terminal the session was in. Or force `iterm`, `terminal`, `tmux`, `headless` |
+| `AUTORESUME_LIVE_PANE` | `prefill` | for a session still open: `prefill` types the prompt without submitting, `type` submits it, `notify` leaves the pane alone. See below |
 | `AUTORESUME_PROMPT` | `continue` | what gets sent |
 | `AUTORESUME_ARM_PCT` | `100` | the % that counts as spent. Lower it if your window tops out just under 100 |
 | `AUTORESUME_WRAPPED` | *(set by install)* | the status line command being passed through |
@@ -112,6 +113,44 @@ touch ~/.claude/autoresume/DISABLED   # off, without uninstalling
 The headless fallback runs `claude --resume ... -p "continue"` in the background and logs to
 `~/.claude/autoresume/headless-<session>.log`. It works anywhere, but nothing can answer a
 permission prompt, so it will stall if one appears.
+
+## The usage-limit menu
+
+A spent limit does not always leave the session at a prompt. Claude Code often puts up
+a menu — internally `rate_limit_options_menu`:
+
+```
+What do you want to do?
+  Upgrade your plan
+  Add funds to continue with usage credits
+  Stop and wait for limit to reset
+```
+
+That is a select list. Typed letters are ignored and **Enter takes whichever line is
+highlighted** — so blindly submitting `continue` into it would choose one at random, and
+two of the three cost money. If you walked away when the limit hit, this menu is exactly
+what is on screen hours later when the window resets.
+
+Two defences were tried and both failed, so they are not in the code:
+
+- **Detect the menu first.** iTerm's `contents` returns the whole scrollback, not the
+  visible screen, so a menu that appeared once and was answered still matches forever —
+  the session would be locked out of ever resuming.
+- **Send Escape ahead of the text.** iTerm merges it with whatever follows, even across
+  separate `osascript` calls seconds apart, and `ESC`+`c` is then read as Meta-c, which
+  eats the first character — `continue` arrives as `ontinue`.
+
+What is left is that the dangerous act is specifically **Enter**. So for a session that is
+still open, the default types the prompt and stops there: inert against a menu, one
+keypress from running at a prompt. You press Enter, and by then you are looking at the
+screen and can see which of the two it is. You get a spoken alert and a notification
+saying so.
+
+Sessions you had **quit** are unaffected and stay fully automatic — a fresh
+`claude --resume` in a new window never has that menu up. If you want full automation for
+open sessions too, set `AUTORESUME_LIVE_PANE=type` and accept the risk above. Terminal.app
+cannot type without submitting at all (`do script` always appends a return), so it refuses
+rather than guessing.
 
 ## Known limits
 

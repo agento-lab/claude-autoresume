@@ -179,6 +179,14 @@ AUTORESUME_RESUME=all
 # auto | iterm | terminal | tmux | headless
 # auto reuses whichever terminal the session was running in.
 AUTORESUME_TERMINAL=auto
+
+# What to do with a session that is still open when its limit resets.
+# A spent limit can leave an interactive menu on screen whose options include
+# paid ones, and Enter takes whichever line is highlighted.
+#   prefill - type the prompt but do not submit it (safe; you press Enter)
+#   type    - submit it too (full automation, accepts the risk above)
+#   notify  - leave the pane alone entirely
+AUTORESUME_LIVE_PANE=prefill
 CONF
     ok "wrote $STATE/config.sh"
 fi
