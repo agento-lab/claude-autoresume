@@ -402,9 +402,9 @@ probe() {
             source '$REPO/lib/terminals.sh'
             ar_send_live $2 some-ident 'continue' 2>/dev/null"
 }
-is "the default is prefill, not submit" \
+is "the default submits, so an open session continues unattended" \
     "$(zsh -c "unset AUTORESUME_LIVE_PANE; CLAUDE_AUTORESUME_CONFIG=/nonexistent source '$REPO/lib/common.sh'; print -r -- \$AUTORESUME_LIVE_PANE")" \
-    "prefill"
+    "type"
 is "notify mode touches nothing" "$(probe notify tmux)" "skipped"
 is "Terminal.app cannot prefill, so it refuses rather than submitting blind" \
     "$(probe prefill apple_terminal)" "unsupported-prefill"

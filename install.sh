@@ -302,12 +302,15 @@ AUTORESUME_CLAUDE_BIN=$(shq "$(command -v claude || printf 'claude')")
 AUTORESUME_TERMINAL=auto
 
 # What to do with a session that is still open when its limit resets.
-# A spent limit can leave an interactive menu on screen whose options include
-# paid ones, and Enter takes whichever line is highlighted.
-#   prefill - type the prompt but do not submit it (safe; you press Enter)
-#   type    - submit it too (full automation, accepts the risk above)
+#   type    - type the prompt and submit it (default; fully unattended)
+#   prefill - type it but leave the Enter to you
 #   notify  - leave the pane alone entirely
-AUTORESUME_LIVE_PANE=prefill
+#
+# A spent limit can leave a menu on screen (upgrade / add funds / stop and wait)
+# where Enter takes the highlighted line. Worst case for $(type) is an extra
+# browser tab or a confirmation dialog; one Enter cannot complete a purchase.
+# Set prefill if you would rather press Enter yourself.
+AUTORESUME_LIVE_PANE=type
 CONF
     ok "wrote $STATE/config.sh"
 fi

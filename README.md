@@ -23,6 +23,31 @@ sessions
   ○ docs-site             idle — 5h 12% / 7d 61% (tmux)
 ```
 
+---
+
+## Quick start
+
+**macOS**, with [`jq`](https://jqlang.github.io/jq/) (`brew install jq`) and Claude Code
+already installed.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agento-lab/claude-autoresume/main/install.sh | sh
+```
+
+**Restart Claude Code**, then check it took:
+
+```sh
+claude-autoresume-status     # expect: service loaded / state active
+```
+
+That is the whole setup. Nothing to configure — the next time you hit a limit it arms
+itself, and when the window rolls over it speaks, notifies, and continues the work.
+
+To stop it at any time: `touch ~/.claude/autoresume/DISABLED`.
+To remove it completely: `~/.local/share/claude-autoresume/uninstall.sh`.
+
+---
+
 **Contents** — [How it works](#how-it-works) · [Requirements](#requirements) ·
 [Install](#install) · [Commands](#commands) · [Configuration](#configuration) ·
 [Terminals](#terminals) · [The usage-limit menu](#the-usage-limit-menu) ·
@@ -216,7 +241,7 @@ config file, so **its values take precedence over the environment**: exporting
 |---|---|---|
 | `AUTORESUME_RESUME` | `all` | `all` resumes every cut-off session; `latest` resumes only the most recent and drops the rest for that window (logged; arm them by hand to run them) |
 | `AUTORESUME_TERMINAL` | `auto` | `auto` reuses whichever terminal the session was in. Or force `iterm`, `terminal`, `tmux`, `headless` |
-| `AUTORESUME_LIVE_PANE` | `prefill` | For a session still open: `prefill` types the prompt without submitting, `type` submits it, `notify` leaves the pane alone. See [below](#the-usage-limit-menu) |
+| `AUTORESUME_LIVE_PANE` | `type` | For a session still open: `type` submits the prompt, `prefill` types it and leaves the Enter to you, `notify` leaves the pane alone. See [below](#the-usage-limit-menu) |
 | `AUTORESUME_PROMPT` | `continue` | what gets sent |
 | `AUTORESUME_ARM_PCT` | `100` | the % that counts as spent. Lower it if your window tops out just under |
 | `AUTORESUME_CLAUDE_BIN` | `claude` | the executable to resume with |
@@ -231,7 +256,7 @@ config file, so **its values take precedence over the environment**: exporting
 | Terminal | Resume in place | New window | Tested |
 |---|---|---|---|
 | iTerm2 | ✅ | ✅ | ✅ |
-| Terminal.app | ⚠️ see below | ✅ | ✅ |
+| Terminal.app | ✅ | ✅ | ✅ |
 | tmux | ✅ | ✅ | ⚠️ written, not yet verified |
 | anything else | — | headless fallback | ⚠️ written, not yet verified |
 
@@ -267,15 +292,22 @@ Two defences were tried and both failed, so neither is in the code:
   separate `osascript` calls seconds apart, and `ESC`+`c` is then read as Meta-c, which eats
   the first character: `continue` arrives as `ontinue`.
 
-What survives is that the dangerous act is specifically **Enter**. So for a session that is
-still open, the default types the prompt and stops there — inert against a menu, one keypress
-from running at a prompt. You get a spoken alert and a notification saying so, and by the
-time you press Enter you are looking at the screen and can see which of the two it is.
+What survives is that the dangerous act is specifically **Enter** — so the `AUTORESUME_LIVE_PANE`
+setting decides who presses it.
 
-**Sessions you had quit stay fully automatic**, since a fresh `claude --resume` in a new
-window never has that menu up. Set `AUTORESUME_LIVE_PANE=type` for full automation of open
-sessions too, accepting the risk above. Terminal.app cannot type without submitting at all
-(`do script` always appends a return), so it refuses rather than guessing.
+**The default is `type`: it submits.** Unattended continuation is the whole point of the
+tool, and the exposure is bounded. A stray Enter on that menu opens a browser tab
+(*Upgrade your plan*) or a further confirmation dialog (*Add funds*, which has its own
+enable/buy confirm step). One Enter cannot complete a purchase.
+
+If you would rather own that keypress, set `AUTORESUME_LIVE_PANE=prefill`. The prompt is
+typed but not submitted — inert against a menu, one keypress from running — and you get a
+spoken alert telling you it is waiting. `notify` leaves the pane alone entirely.
+
+**Sessions you had quit are unaffected either way** and always resume fully automatically,
+since a fresh `claude --resume` in a new window never has that menu up. Terminal.app cannot
+type without submitting at all (`do script` always appends a return), so under `prefill` it
+declines rather than guessing.
 
 ---
 
@@ -294,8 +326,8 @@ Then read `~/.claude/autoresume/watch.log`.
 **My status line disappeared.** Something replaced `statusLine.command` — running
 `/statusline` does this. Re-run the installer to re-wrap.
 
-**It resumed but nothing ran.** With the default `prefill`, a still-open session gets the
-text without the Enter. That is deliberate; press Enter.
+**It resumed but nothing ran.** You have `AUTORESUME_LIVE_PANE=prefill` set, which types the
+prompt and leaves the Enter to you. Press Enter, or set it back to `type`.
 
 ---
 

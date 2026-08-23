@@ -23,7 +23,7 @@ WRAPPED_FILE="${CLAUDE_AUTORESUME_WRAPPED_FILE:-$AUTORESUME_DIR/wrapped.sh}"
 : ${AUTORESUME_PROMPT:=continue}      # what to send on resume
 : ${AUTORESUME_RESUME:=all}           # all | latest
 : ${AUTORESUME_TERMINAL:=auto}        # auto | iterm | terminal | tmux | headless
-: ${AUTORESUME_LIVE_PANE:=prefill}    # prefill | type | notify
+: ${AUTORESUME_LIVE_PANE:=type}       # type | prefill | notify
 : ${AUTORESUME_CLAUDE_BIN:=claude}
 : ${AUTORESUME_GRACE:=60}             # seconds past reset before acting
 : ${AUTORESUME_FRESH:=90}             # state file younger than this => still open

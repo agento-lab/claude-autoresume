@@ -38,16 +38,18 @@ ar_tmux_alive() { command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/nu
 # calls seconds apart, and ESC+"c" is then read as Meta-c, eating the first
 # character.
 #
-# What survives is the observation that the dangerous act is specifically Enter.
-# So by default the text is typed but not submitted: inert against a menu, and
-# one keypress from running at a prompt. The human presses Enter, and by then
-# they are looking at the screen and can see which of the two it is.
+# The dangerous act is specifically Enter, so the mode decides who presses it.
 #
-#   prefill  type the text, do not submit   (default)
-#   type     type and submit                (full automation, accepts the risk)
+# The default submits, because unattended continuation is the entire point of the
+# tool. The exposure is bounded: a stray Enter on that menu opens a browser tab
+# (upgrade) or a further confirmation dialog (add funds, which has its own
+# enable/buy confirm step). One Enter cannot complete a purchase.
+#
+#   type     type and submit                (default -- fully unattended)
+#   prefill  type the text, do not submit   (you press Enter; inert against a menu)
 #   notify   touch nothing
 ar_send_live() {
-    local kind=$1 ident=$2 text=$3 mode=${4:-${AUTORESUME_LIVE_PANE:-prefill}}
+    local kind=$1 ident=$2 text=$3 mode=${4:-${AUTORESUME_LIVE_PANE:-type}}
     [[ -n $ident ]] || { print -r -- unsupported; return 0 }
     [[ $mode == notify ]] && { print -r -- skipped; return 0 }
     case $kind in
