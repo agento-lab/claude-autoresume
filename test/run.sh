@@ -200,7 +200,19 @@ printf '#!/bin/sh\necho "RESUMED $*" >> "%s/resumed.log"\n' "$SB" >"$STUB/fakecl
 chmod +x "$STUB/fakeclaude"
 PATH="$STUB:$PATH"
 export PATH
-export AUTORESUME_TERMINAL=headless AUTORESUME_CLAUDE_BIN="$STUB/fakeclaude"
+# Written into the sandbox config, not exported. common.sh sources config.sh and
+# that file assigns these outright, so an exported value was silently ignored --
+# which meant this group spawned the developer's REAL claude twice per run. CI
+# never saw it because the runner has no claude installed.
+sed -i '' "s|^AUTORESUME_TERMINAL=.*|AUTORESUME_TERMINAL=headless|" "$CLAUDE_AUTORESUME_DIR/config.sh"
+if grep -q "^AUTORESUME_CLAUDE_BIN=" "$CLAUDE_AUTORESUME_DIR/config.sh"; then
+    sed -i '' "s|^AUTORESUME_CLAUDE_BIN=.*|AUTORESUME_CLAUDE_BIN='$STUB/fakeclaude'|" "$CLAUDE_AUTORESUME_DIR/config.sh"
+else
+    printf "AUTORESUME_CLAUDE_BIN='%s'\n" "$STUB/fakeclaude" >>"$CLAUDE_AUTORESUME_DIR/config.sh"
+fi
+is "the stub claude is the one actually configured" \
+    "$(zsh -c "CLAUDE_AUTORESUME_DIR='$CLAUDE_AUTORESUME_DIR' source '$REPO/lib/common.sh'; print -r -- \$AUTORESUME_CLAUDE_BIN")" \
+    "$STUB/fakeclaude"
 
 rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
 sed -i '' 's/^AUTORESUME_RESUME=latest/AUTORESUME_RESUME=all/' "$CLAUDE_AUTORESUME_DIR/config.sh"
@@ -222,6 +234,22 @@ printf '%s' "$(payload once 100 $((NOW - 100)) 5 1900000000)" | sensor >/dev/nul
 "$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
 newwin=$(grep -c '\[resume\]' "$CLAUDE_AUTORESUME_DIR/watch.log" 2>/dev/null || echo 0)
 is "but a new reset window does fire" "$newwin" "2"
+
+# An unrecorded resume repeats on every tick forever, so it must refuse to act at
+# all when the mark cannot be written. mkdir -p succeeds on a directory that
+# exists but is unwritable, so its status alone did not catch this.
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
+NOW=$(date +%s)
+printf '%s' "$(payload noperm 100 $((NOW - 300)) 5 1900000000)" | sensor >/dev/null
+chmod 555 "$CLAUDE_AUTORESUME_DIR/fired"
+"$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
+chmod 755 "$CLAUDE_AUTORESUME_DIR/fired"
+if grep -q '\[abort\]' "$CLAUDE_AUTORESUME_DIR/watch.log"; then
+    ok "refuses to resume when the fire mark cannot be written"
+else
+    bad "refuses to resume when the fire mark cannot be written" \
+        "$(cat "$CLAUDE_AUTORESUME_DIR/watch.log" 2>/dev/null)"
+fi
 
 # -----------------------------------------------------------------------------
 group "grace period"
@@ -280,6 +308,22 @@ for flag in --session --in --at; do
         *) bad "$flag with no value fails instead of hanging" "$out" ;;
     esac
 done
+
+# With no --session, arm targets the most recent. The glob qualifier was (NOm),
+# which is oldest-FIRST, so it silently armed the wrong session -- and made
+# --disarm clear a stale one while the imminent resume went ahead.
+printf '%s' "$(payload older 12 $((NOW + 9000)) 5 1900000000)" | sensor >/dev/null
+sleep 1
+printf '%s' "$(payload newer 12 $((NOW + 9000)) 5 1900000000)" | sensor >/dev/null
+"$ARM" --in 1h >/dev/null 2>&1
+if [ -f "$CLAUDE_AUTORESUME_DIR/manual/newer.json" ]; then
+    ok "with no --session it targets the most recent, not the oldest"
+else
+    bad "with no --session it targets the most recent" \
+        "armed: $(find "$CLAUDE_AUTORESUME_DIR/manual" -name '*.json' -exec basename {} \; 2>/dev/null | tr '\n' ' ')"
+fi
+rm -f "$CLAUDE_AUTORESUME_DIR"/manual/*.json \
+    "$CLAUDE_AUTORESUME_DIR/older.json" "$CLAUDE_AUTORESUME_DIR/newer.json"
 
 "$ARM" --session marm --in 2h30m >/dev/null 2>&1
 is "--in parses hours and minutes" \
@@ -387,7 +431,12 @@ rm -f "$CLAUDE_AUTORESUME_DIR/broken.json"
 # -----------------------------------------------------------------------------
 group "re-install"
 sh "$REPO/install.sh" >/dev/null 2>&1
-w=$(sed -n "s/^AUTORESUME_WRAPPED=//p" "$CLAUDE_AUTORESUME_DIR/config.sh" | tr -d "'")
+w=$(
+    set +u
+    # shellcheck source=/dev/null
+    . "$CLAUDE_AUTORESUME_DIR/wrapped.sh" 2>/dev/null || true
+    printf '%s' "${AUTORESUME_WRAPPED:-}"
+)
 case "$w" in
     *claude-autoresume-sensor*) bad "re-install does not wrap itself" "wrapped=$w" ;;
     *sl.sh) ok "re-install does not wrap itself" ;;

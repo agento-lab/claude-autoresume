@@ -20,7 +20,7 @@ BINDIR="${CLAUDE_AUTORESUME_BINDIR:-$HOME/.local/bin}"
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 STATE="${CLAUDE_AUTORESUME_DIR:-$CLAUDE_DIR/autoresume}"
 SETTINGS="$CLAUDE_DIR/settings.json"
-PLIST="$HOME/Library/LaunchAgents/com.claude-autoresume.plist"
+PLIST="${CLAUDE_AUTORESUME_PLIST:-$HOME/Library/LaunchAgents/com.claude-autoresume.plist}"
 LABEL="com.claude-autoresume"
 NO_SERVICE="${CLAUDE_AUTORESUME_NO_SERVICE:-0}"
 
@@ -42,7 +42,11 @@ shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # lands on the real file, keeps its mode, and does not orphan the original.
 resolve_link() {
     _t=$1
+    _hops=0
     while [ -L "$_t" ]; do
+        _hops=$((_hops + 1))
+        [ "$_hops" -gt 40 ] && die "$1 is a symlink loop"
+
         _l=$(readlink "$_t")
         case "$_l" in
             /*) _t=$_l ;;
@@ -179,15 +183,24 @@ cp "$SETTINGS" "$SETTINGS.autoresume-backup.$(date +%Y%m%d-%H%M%S)"
 
 CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS")
 WRAPPED=""
-if [ -f "$STATE/config.sh" ]; then
-    # Sourced rather than string-stripped: the value is shell-quoted, and a
-    # naive s/^'// s/'$// mangles anything containing an escaped quote.
-    WRAPPED=$(
+# Read back by sourcing, because the value is shell-quoted and a naive
+# s/^'// s/'$// mangles anything containing an escaped quote.
+#
+# `set +eu` and the `|| true` are load-bearing: the subshell inherits our
+# options, so any non-zero exit inside the sourced file propagated out of the
+# command substitution and killed the installer here -- after the prefix was
+# copied but before settings.json was written. A half-install that looked green.
+read_wrapped() {
+    [ -f "$1" ] || return 0
+    (
+        set +eu
         # shellcheck source=/dev/null
-        . "$STATE/config.sh" 2>/dev/null
+        . "$1" 2>/dev/null || true
         printf '%s' "${AUTORESUME_WRAPPED:-}"
-    )
-fi
+    ) || true
+}
+WRAPPED=$(read_wrapped "$STATE/wrapped.sh")
+[ -n "$WRAPPED" ] || WRAPPED=$(read_wrapped "$STATE/config.sh") # pre-0.1.2 layout
 case "$CURRENT" in
     *claude-autoresume-sensor*)
         # Already wrapped. Never record ourselves as the wrapped command --
@@ -248,29 +261,26 @@ ok "settings.json updated (backup alongside it)"
 
 # ---- config ------------------------------------------------------------------
 
+# Written whole, every time, into its own file. Editing one assignment inside
+# the shared config was line-based, so a status line command spanning more than
+# one line left orphaned fragments behind -- which common.sh then executed on
+# every status-line render.
+_w_tmp=$(mktemp)
+{
+    printf '%s\n' '# Managed by claude-autoresume. Regenerated on every install.'
+    printf '%s\n' '# The status line command the sensor took over; its output is printed unchanged.'
+    printf 'AUTORESUME_WRAPPED=%s\n' "$(shq "$WRAPPED")"
+} >"$_w_tmp"
+if ! mv -f "$_w_tmp" "$STATE/wrapped.sh"; then
+    rm -f "$_w_tmp"
+    die "could not write $STATE/wrapped.sh"
+fi
+
 if [ -f "$STATE/config.sh" ]; then
-    # Rewritten by filtering and appending, not by sed. The old
-    # `sed "s|^AUTORESUME_WRAPPED=.*|...'$WRAPPED'|"` interpolated the user's
-    # status line into both the pattern and the replacement: a `|` in it (the
-    # documented Claude Code example has one) aborted the installer half way,
-    # after settings.json had been repointed but before the service was
-    # registered. An `&` silently corrupted the value instead.
-    _cfg_tmp=$(mktemp)
-    {
-        grep -v '^AUTORESUME_WRAPPED=' "$STATE/config.sh" || true
-        printf 'AUTORESUME_WRAPPED=%s\n' "$(shq "$WRAPPED")"
-    } >"$_cfg_tmp"
-    if ! mv -f "$_cfg_tmp" "$STATE/config.sh"; then
-        rm -f "$_cfg_tmp"
-        die "could not update $STATE/config.sh"
-    fi
     ok "kept your existing config"
 else
     cat >"$STATE/config.sh" <<CONF
 # claude-autoresume configuration. Sourced by every command.
-
-# What the sensor took over. Its output is printed unchanged.
-AUTORESUME_WRAPPED=$(shq "$WRAPPED")
 
 # Percentage of a usage window that counts as spent.
 AUTORESUME_ARM_PCT=100
@@ -279,7 +289,8 @@ AUTORESUME_ARM_PCT=100
 AUTORESUME_PROMPT='continue'
 
 # all    — resume every session that was cut off
-# latest — resume only the most recent, leave the rest armed
+# latest — resume only the most recent; the rest are dropped for that window
+#          (logged) and can be run with claude-autoresume-arm
 AUTORESUME_RESUME=all
 
 # Absolute path resolved at install time. Under launchd the PATH is fixed, so a

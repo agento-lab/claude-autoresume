@@ -50,7 +50,7 @@ for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
         # directory, and discarding something the user set by hand on that
         # evidence cannot be undone. Marking it keeps the log quiet instead.
         ar_log "[skip] session=${sid:-?} cwd=${cwd:-none} — directory not available"
-        if (( ! DRYRUN )) && [[ -n $sid ]]; then ar_mark_fired "$sid" "$reset"; fi
+        if (( ! DRYRUN )) && [[ -n $sid ]]; then ar_mark_fired "$sid" "$reset" || true; fi
         continue
     fi
 
@@ -65,6 +65,8 @@ if (( ! ${#due} )); then
     find "$STATE_DIR"  -maxdepth 1 -name '*.json' -mtime +7  -delete 2>/dev/null
     find "$MANUAL_DIR" -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
     find "$FIRED_DIR"  -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
+    # The fire marks are *.last, which the *.json sweep above never matched.
+    find "$FIRED_DIR"  -maxdepth 1 -name '*.last' -mtime +30 -delete 2>/dev/null
     exit 0
 fi
 
@@ -82,7 +84,7 @@ if [[ $AUTORESUME_RESUME == latest ]] && (( ${#due} > 1 )); then
         # through a minute apart -- which is not "only the most recent" at all.
         hsid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
         ar_log "[skipped] session=$hsid — resume=latest kept only the newest; arm it by hand to run it"
-        if (( ! DRYRUN )) && [[ -n $hsid ]]; then ar_mark_fired "$hsid" "${reset_of[$hsid]}"; fi
+        if (( ! DRYRUN )) && [[ -n $hsid ]]; then ar_mark_fired "$hsid" "${reset_of[$hsid]:-0}" || true; fi
     done
     due=("$newest")
 fi
@@ -120,6 +122,14 @@ for f in $due; do
     live="$STATE_DIR/${sid}.json"
     [[ -f $live ]] || live="$f"
     age=$(( now - $(stat -f %m "$live" 2>/dev/null || printf 0) ))
+
+    # Recorded BEFORE acting. If the mark cannot be written -- fired/ present but
+    # unwritable, a full disk -- resuming anyway means resuming again every 60s
+    # forever, which is the bug this bookkeeping exists to prevent.
+    if (( ! DRYRUN )) && ! ar_mark_fired "$sid" "${reset_of[$sid]:-0}"; then
+        ar_log "[abort] session=$sid — cannot write $FIRED_DIR; refusing to resume unrecorded"
+        continue
+    fi
 
     route="" result="" mode="live-pane"
     if (( age < AUTORESUME_FRESH )) && [[ -n $tkind && -n $tident ]]; then
@@ -174,7 +184,6 @@ for f in $due; do
     ar_log "[resume] session=$sid window=$window route=$route mode=$mode result=$result cwd=$cwd"
 
     if (( ! DRYRUN )); then
-        ar_mark_fired "$sid" "${reset_of[$sid]}"
         mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
         rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null
     fi

@@ -29,8 +29,8 @@ print -r -- "  resume    ${AUTORESUME_RESUME}  ${DIM}terminal=${AUTORESUME_TERMI
 
 print -r -- ""
 print -r -- "${BOLD}sessions${R}"
-files=("$STATE_DIR"/*.json(NOm))
-manual=("$MANUAL_DIR"/*.json(NOm))
+files=("$STATE_DIR"/*.json(Nom))
+manual=("$MANUAL_DIR"/*.json(Nom))
 if (( ! ${#files} && ! ${#manual} )); then
     print -r -- "  ${DIM}none recorded yet${R}"
 else
@@ -59,7 +59,7 @@ else
     done
 fi
 
-fired=("$FIRED_DIR"/*.json(NOm))
+fired=("$FIRED_DIR"/*.json(Nom))
 if (( ${#fired} )); then
     print -r -- ""
     print -r -- "${BOLD}recently resumed${R}"

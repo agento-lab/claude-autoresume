@@ -36,7 +36,7 @@ while (( $# )); do
     esac
 done
 
-files=("$STATE_DIR"/*.json(NOm))     # newest first
+files=("$STATE_DIR"/*.json(Nom))     # newest first -- Om is oldest first, om is newest
 (( ${#files} )) || { print -u2 -- "no sessions recorded yet in $STATE_DIR
 (the sensor writes one the moment any Claude session renders its status line)"; exit 1 }
 

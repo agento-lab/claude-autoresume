@@ -172,7 +172,7 @@ A `curl | sh` install should say exactly what it does. This one:
 | `~/.local/share/claude-autoresume/` | the code |
 | `~/.local/bin/claude-autoresume-*` | symlinks to the three commands |
 | `~/.claude/settings.json` | `statusLine.command` → the sensor; `refreshInterval` lowered to 15 only if absent or higher. Copied to `settings.json.autoresume-backup.<timestamp>` first — **these accumulate and are never cleaned up**, not even by `--purge` — and the original `statusLine` object is snapshotted so uninstall restores it exactly |
-| `~/.claude/autoresume/` | state files, `config.sh`, `watch.log`, plus `manual/`, `fired/`, `backup/statusline.json`, launchd's stdout/stderr logs and any `headless-<session>.log` |
+| `~/.claude/autoresume/` | state files, `config.sh`, `wrapped.sh`, `watch.log`, plus `manual/`, `fired/`, `backup/statusline.json`, launchd's stdout/stderr logs and any `headless-<session>.log` |
 | `~/Library/LaunchAgents/com.claude-autoresume.plist` | the 60-second timer |
 
 Nothing else is modified, and there are no network calls after install.
@@ -208,7 +208,9 @@ undone within seconds. A genuinely new window arms again as normal.
 ## Configuration
 
 `~/.claude/autoresume/config.sh` — a plain shell file, sourced by every command. It is a
-config file, so its values take precedence over the environment.
+config file, so **its values take precedence over the environment**: exporting
+`AUTORESUME_TERMINAL` will not override a line that assigns it. Edit the file, or point
+`CLAUDE_AUTORESUME_CONFIG` elsewhere.
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -220,7 +222,7 @@ config file, so its values take precedence over the environment.
 | `AUTORESUME_CLAUDE_BIN` | `claude` | the executable to resume with |
 | `AUTORESUME_GRACE` | `60` | seconds to wait past `resets_at` before acting |
 | `AUTORESUME_FRESH` | `90` | a state file younger than this means the session is still open |
-| `AUTORESUME_WRAPPED` | *(set by install)* | the status line command being passed through |
+| `AUTORESUME_WRAPPED` | *(set by install)* | the status line command being passed through. Lives in `wrapped.sh`, not `config.sh` — it is arbitrary shell and may span lines, so it is regenerated whole rather than edited in place |
 
 ---
 

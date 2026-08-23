@@ -10,6 +10,14 @@
 CONFIG_FILE="${CLAUDE_AUTORESUME_CONFIG:-$AUTORESUME_DIR/config.sh}"
 [[ -r $CONFIG_FILE ]] && source "$CONFIG_FILE"
 
+# The wrapped status line lives in its own machine-managed file, not in the
+# user-editable config. It is arbitrary shell and may span lines, and rewriting
+# one assignment inside a shared file line-by-line corrupted it: only the first
+# physical line was replaced, orphaning the rest, and common.sh then executed the
+# fragments on every render. Regenerating a single-value file avoids the problem.
+WRAPPED_FILE="${CLAUDE_AUTORESUME_WRAPPED_FILE:-$AUTORESUME_DIR/wrapped.sh}"
+[[ -r $WRAPPED_FILE ]] && source "$WRAPPED_FILE"
+
 # Defaults, applied only where the config file left a gap.
 : ${AUTORESUME_ARM_PCT:=100}          # window % that counts as spent
 : ${AUTORESUME_PROMPT:=continue}      # what to send on resume
@@ -41,11 +49,15 @@ ar_already_fired() {
     [[ $(<"$mark") == "$2" ]]
 }
 
+# Returns non-zero if the mark could not be written. That matters: the caller
+# must refuse to resume rather than proceed, because an unrecorded resume is
+# repeated on every tick forever. `mkdir -p` succeeds on a directory that exists
+# but is unwritable, so its status alone is not enough.
 ar_mark_fired() {
     local mark; mark=$(ar_fired_mark "$1")
-    mkdir -p "$FIRED_DIR" 2>/dev/null || return 0
-    print -r -- "$2" > "$mark" 2>/dev/null
-    return 0
+    mkdir -p "$FIRED_DIR" 2>/dev/null || return 1
+    print -r -- "$2" > "$mark" 2>/dev/null || return 1
+    [[ -s $mark ]]
 }
 
 ar_log() { print -r -- "$(date '+%Y-%m-%dT%H:%M:%S%z') $*" >> "$LOG_FILE" 2>/dev/null }

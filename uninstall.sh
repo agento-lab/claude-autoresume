@@ -53,8 +53,19 @@ if [ "$MINE" = "0" ]; then
 elif [ -f "$SETTINGS" ]; then
     cp "$SETTINGS" "$SETTINGS.autoresume-backup.$(date +%Y%m%d-%H%M%S)"
     WRAPPED=""
-    [ -f "$STATE/config.sh" ] && WRAPPED=$(sed -n "s/^AUTORESUME_WRAPPED=//p" "$STATE/config.sh" |
-        head -1 | sed "s/^'//; s/'$//")
+    # Sourced, not string-stripped. install.sh writes this shell-quoted (an
+    # apostrophe becomes '\''), and the old sed decoder produced literal quote
+    # soup while reporting the status line as "restored".
+    for _wf in "$STATE/wrapped.sh" "$STATE/config.sh"; do
+        [ -f "$_wf" ] || continue
+        WRAPPED=$(
+            set +eu
+            # shellcheck source=/dev/null
+            . "$_wf" 2>/dev/null || true
+            printf '%s' "${AUTORESUME_WRAPPED:-}"
+        ) || WRAPPED=""
+        [ -n "$WRAPPED" ] && break
+    done
     tmp=$(mktemp)
     BACKUP="$STATE/backup/statusline.json"
     [ -s "$BACKUP" ] || BACKUP="$STATE/statusline.backup.json" # pre-0.1.1 layout
