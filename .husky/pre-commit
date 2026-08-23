@@ -1,3 +1,9 @@
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+    echo "✗ Direct commits to '$branch' are not allowed. Create a feature branch first."
+    exit 1
+fi
+
 # Lint only what is being committed. scripts/lint.sh routes each file by its
 # shebang: zsh files get `zsh -n`, POSIX sh files get shellcheck + shfmt.
 bunx lint-staged

@@ -24,9 +24,34 @@ ar_tmux_alive() { command -v tmux >/dev/null 2>&1 && tmux list-sessions >/dev/nu
 
 # ---- send into an existing pane ---------------------------------------------
 
+# A spent limit does not leave the session at a plain prompt. Claude Code puts up
+# a select menu -- internally `rate_limit_options_menu` -- offering to upgrade the
+# plan, add funds for usage credits, or stop and wait. Letters are ignored in a
+# select list and Enter takes whichever line is highlighted, so submitting blind
+# could pick an option that costs money.
+#
+# Two obvious defences were tried and both failed. Detecting the menu first does
+# not work: iTerm's `contents` returns the whole buffer rather than the visible
+# screen, so a menu that appeared once still matches forever and the session
+# would never resume again. Sending Escape ahead of the text does not work
+# either -- iTerm merges it with whatever follows, even across separate osascript
+# calls seconds apart, and ESC+"c" is then read as Meta-c, eating the first
+# character.
+#
+# The dangerous act is specifically Enter, so the mode decides who presses it.
+#
+# The default submits, because unattended continuation is the entire point of the
+# tool. The exposure is bounded: a stray Enter on that menu opens a browser tab
+# (upgrade) or a further confirmation dialog (add funds, which has its own
+# enable/buy confirm step). One Enter cannot complete a purchase.
+#
+#   type     type and submit                (default -- fully unattended)
+#   prefill  type the text, do not submit   (you press Enter; inert against a menu)
+#   notify   touch nothing
 ar_send_live() {
-    local kind=$1 ident=$2 text=$3
+    local kind=$1 ident=$2 text=$3 mode=${4:-${AUTORESUME_LIVE_PANE:-type}}
     [[ -n $ident ]] || { print -r -- unsupported; return 0 }
+    [[ $mode == notify ]] && { print -r -- skipped; return 0 }
     case $kind in
         tmux)
             ar_tmux_alive || { print -r -- notrunning; return 0 }
@@ -35,20 +60,29 @@ ar_send_live() {
             # pane into a failed lookup.
             local -a panes
             panes=(${(f)"$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null)"})
-            (( ${panes[(I)$ident]} )) || { print -r -- notfound; return 0 }
-            tmux send-keys -t "$ident" "$text" Enter 2>/dev/null \
-                && print -r -- sent || print -r -- error
+            (( ${panes[(Ie)$ident]} )) || { print -r -- notfound; return 0 }
+            if [[ $mode == type ]]; then
+                tmux send-keys -t "$ident" -l -- "$text" 2>/dev/null && tmux send-keys -t "$ident" Enter 2>/dev/null \
+                    && print -r -- sent || print -r -- error
+            else
+                tmux send-keys -t "$ident" -l -- "$text" 2>/dev/null \
+                    && print -r -- prefilled || print -r -- error
+            fi
             ;;
         iterm)
             ar_app_running iTerm2 || { print -r -- notrunning; return 0 }
+            # `newline NO` is what makes prefill possible: the text reaches the
+            # prompt without the return that would submit it.
+            local itermNL="" itermResult=sent
+            [[ $mode == type ]] || { itermNL=" newline NO"; itermResult=prefilled }
             osascript <<OSA 2>/dev/null || print -r -- error
 tell application "iTerm"
     repeat with w in windows
         repeat with t in tabs of w
             repeat with s in sessions of t
                 if id of s is "$(ar_osa_escape "$ident")" then
-                    tell s to write text "$(ar_osa_escape "$text")"
-                    return "sent"
+                    tell s to write text "$(ar_osa_escape "$text")"$itermNL
+                    return "$itermResult"
                 end if
             end repeat
         end repeat
@@ -60,6 +94,11 @@ OSA
         apple_terminal)
             # Terminal.app has no session id, but every tab exposes its tty and
             # the sensor records the one Claude was attached to.
+            #
+            # `do script` always appends a return, so typing without submitting
+            # is not possible here. Rather than submit blind into a menu that may
+            # be open, this degrades to leaving the pane alone.
+            [[ $mode == type ]] || { print -r -- unsupported-prefill; return 0 }
             ar_app_running Terminal || { print -r -- notrunning; return 0 }
             osascript <<OSA 2>/dev/null || print -r -- error
 tell application "Terminal"
@@ -93,12 +132,28 @@ ar_build_cmd() {
     print -r -- "$cmd"
 }
 
+# Whether a terminal can actually be driven right now, as opposed to whether the
+# session was recorded under it. A tmux server that has since exited, or iTerm
+# uninstalled since, both need to fall back rather than be trusted.
+ar_terminal_usable() {
+    case $1 in
+        tmux) ar_tmux_alive ;;
+        iterm) [[ -d /Applications/iTerm.app || -d $HOME/Applications/iTerm.app ]] ;;
+        apple_terminal|headless) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Which terminal to open when the recorded one is gone or was never known.
 ar_pick_terminal() {
     local preferred=$1
+    # `terminal` is what the config documents and what a user would type;
+    # `apple_terminal` is what the sensor records. Accept both, or the value
+    # falls through every case below and silently degrades to headless.
+    [[ $preferred == terminal ]] && preferred=apple_terminal
     if [[ $preferred != auto && -n $preferred ]]; then print -r -- "$preferred"; return; fi
     ar_tmux_alive                       && { print -r -- tmux; return }
-    [[ -d /Applications/iTerm.app ]]    && { print -r -- iterm; return }
+    [[ -d /Applications/iTerm.app || -d $HOME/Applications/iTerm.app ]] && { print -r -- iterm; return }
     [[ -d /System/Applications/Utilities/Terminal.app ]] && { print -r -- apple_terminal; return }
     print -r -- headless
 }

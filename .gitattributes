@@ -1,0 +1,10 @@
+# See https://git-scm.com/docs/gitattributes for more about git attribute files.
+
+# Shell scripts need LF: a CRLF checkout breaks the shebang outright, because
+# `/usr/bin/env zsh\r` is not a program. Line endings are not a style question
+# here. The wildcard normalises every other text file in the repo too.
+* text=auto eol=lf
+
+# Generated, not authored: keep them out of language stats and diffs.
+bun.lock linguist-generated
+CHANGELOG.md linguist-generated

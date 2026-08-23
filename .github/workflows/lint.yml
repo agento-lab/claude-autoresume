@@ -3,6 +3,12 @@ on:
   pull_request:
   workflow_call:
 
+# Declared explicitly. Without a permissions block these inherit the caller's,
+# and Main grants contents:write + actions:write -- so `bun install` and a
+# curl'd shfmt binary were running with push rights they have no use for.
+permissions:
+  contents: read
+
 jobs:
   lint:
     # Ubuntu is fine here: shellcheck, shfmt and `zsh -n` all behave the same,
@@ -56,4 +62,4 @@ jobs:
           HUSKY: 0
 
       - name: Lint commit messages
-        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose
+        run: bunx commitlint --from "${{ github.event.pull_request.base.sha }}" --to HEAD --verbose --strict

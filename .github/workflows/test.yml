@@ -3,6 +3,11 @@ on:
   pull_request:
   workflow_call:
 
+# Declared explicitly. Without a permissions block these inherit the caller's,
+# and Main grants contents:write + actions:write -- read is all this job needs.
+permissions:
+  contents: read
+
 jobs:
   test:
     # macOS is not a preference here. The suite installs and uninstalls for

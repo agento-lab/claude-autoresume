@@ -2,7 +2,8 @@
 #
 # claude-autoresume-arm -- arm a session by hand.
 #
-# The sensor arms automatically once a usage window reads 100%. This is the
+# The sensor arms automatically once a usage window reads spent
+# (100% by default; see AUTORESUME_ARM_PCT). This is the
 # override for when it doesn't: the window tops out a hair under, or you simply
 # want a resume at a time of your choosing.
 #
@@ -19,19 +20,26 @@ source "${0:A:h}/../lib/common.sh" 2>/dev/null || exit 1
 now=$(ar_now)
 
 sid="" at="" in_="" mode=arm
+# zsh's `shift 2` with one argument left errors *and does not shift*, unlike
+# bash. Without this guard `--session` with no value loops forever printing
+# "shift count must be <= $#".
+need() { (( $# >= 2 )) || { print -u2 -- "$1 needs a value"; exit 2 } }
+
 while (( $# )); do
     case $1 in
-        --session) sid=${2:-}; shift 2 ;;
-        --in)      in_=${2:-}; shift 2 ;;
-        --at)      at=${2:-}; shift 2 ;;
+        --session) need "$@"; sid=$2; shift 2 ;;
+        --in)      need "$@"; in_=$2; shift 2 ;;
+        --at)      need "$@"; at=$2; shift 2 ;;
         --disarm)  mode=disarm; shift ;;
         --list)    mode=list; shift ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Bounded by the end of the header block rather than a fixed line
+        # number, which had rotted and was printing three lines of source.
+        -h|--help) sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         *) print -u2 -- "unknown argument: $1"; exit 2 ;;
     esac
 done
 
-files=("$STATE_DIR"/*.json(NOm))     # newest first
+files=("$STATE_DIR"/*.json(Nom))     # newest first -- Om is oldest first, om is newest
 (( ${#files} )) || { print -u2 -- "no sessions recorded yet in $STATE_DIR
 (the sensor writes one the moment any Claude session renders its status line)"; exit 1 }
 
@@ -53,11 +61,41 @@ fi
 
 # Manual arms live in their own directory: the sensor rewrites its own copy from
 # scratch on every render, so an arm written there would be erased in seconds.
-mkdir -p "$MANUAL_DIR" 2>/dev/null
-tsid=$(jq -r '.session_id' "$target" 2>/dev/null)
+mkdir -p "$MANUAL_DIR" || { print -u2 -- "cannot create $MANUAL_DIR"; exit 1 }
+
+# `// empty` matters: without it a jq failure yields the string "null", and the
+# arm lands in $MANUAL_DIR/null.json -- or, with a bare `.session_id` on a
+# malformed file, in .json, which every *.json glob skips as a dotfile.
+tsid=$(jq -r '.session_id // empty' "$target" 2>/dev/null)
+[[ -n $tsid ]] || { print -u2 -- "no session_id in $target"; exit 1 }
 
 if [[ $mode == disarm ]]; then
-    rm -f "$MANUAL_DIR/${tsid}.json" 2>/dev/null && print -r -- "disarmed $tsid"
+    # Removing the manual arm alone is not enough. The common case is a session
+    # the *sensor* armed, whose state file it rewrites every 15s -- deleting
+    # anything there would be undone within seconds. Marking the current reset
+    # as already handled is what actually stops it firing, and a genuinely new
+    # window carries a different reset and arms again as it should.
+    had_manual=0
+    [[ -f $MANUAL_DIR/${tsid}.json ]] && had_manual=1
+    rm -f "$MANUAL_DIR/${tsid}.json" 2>/dev/null
+    treset=$(jq -r '.resets_at // empty' "$target" 2>/dev/null)
+    marked=0
+    if [[ $treset == <-> ]]; then
+        # The watcher already refuses to act on an unwritable mark; arm reported
+        # success regardless, leaving a sensor-armed session to resume anyway.
+        if ar_mark_fired "$tsid" "$treset"; then
+            marked=1
+        else
+            print -u2 -- "removed the manual arm, but could not record the disarm in $FIRED_DIR"
+            print -u2 -- "$tsid is still armed by the sensor and will resume"
+            exit 1
+        fi
+    fi
+    if (( had_manual || marked )); then
+        print -r -- "disarmed $tsid"
+    else
+        print -r -- "$tsid was not armed"
+    fi
     exit 0
 fi
 
@@ -84,9 +122,18 @@ else
     [[ $reset == <-> ]] || { print -u2 -- "no 5-hour reset recorded for this session — pass --in or --at"; exit 1 }
 fi
 
-tmp=$(mktemp) && jq --argjson r "$reset" \
-    '.armed=true | .resets_at=$r | .armed_window="manual"' "$target" > "$tmp" \
-    && mv -f "$tmp" "$MANUAL_DIR/${tsid}.json"
+# Reported success used to be unconditional, so a failed write still printed
+# "armed" and exited 0 while nothing existed on disk to fire.
+tmp=$(mktemp) || { print -u2 -- "cannot create a temporary file"; exit 1 }
+if ! jq --argjson r "$reset" \
+        '.armed=true | .resets_at=$r | .armed_window="manual"' "$target" > "$tmp"; then
+    rm -f "$tmp"; print -u2 -- "could not rewrite state for $tsid"; exit 1
+fi
+mv -f "$tmp" "$MANUAL_DIR/${tsid}.json" || {
+    rm -f "$tmp"; print -u2 -- "could not write $MANUAL_DIR/${tsid}.json"; exit 1
+}
+# A hand-arm overrides an earlier disarm or a previous fire for this reset.
+rm -f "$(ar_fired_mark "$tsid")" 2>/dev/null
 
 left=$(( reset - now )); (( left < 0 )) && left=0
 printf 'armed %s\n  resumes at %s (in %dh%02dm)\n  cwd %s\n' \

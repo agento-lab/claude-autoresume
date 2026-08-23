@@ -26,7 +26,7 @@ mkdir -p "$FIRED_DIR" "$MANUAL_DIR" 2>/dev/null || exit 0
 # render, so a hand-armed session would be un-armed within seconds; manual arms
 # live in $MANUAL_DIR, which the sensor never touches.
 
-due=(); seen=()
+due=(); seen=(); typeset -A reset_of
 for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
     armed=$(jq -r '.armed // false' "$f" 2>/dev/null) || continue
     [[ $armed == true ]] || continue
@@ -34,19 +34,29 @@ for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
     [[ $reset == <-> ]] || continue
     (( now >= reset + AUTORESUME_GRACE )) || continue
 
+    # Already acted on for this same reset. Without this the sensor's next
+    # rewrite re-arms the session with the same stale resets_at -- an idle
+    # session makes no API call, so the payload never refreshes -- and it fires
+    # again every 60s, forever.
+    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+    [[ -n $sid ]] && ar_already_fired "$sid" "$reset" && continue
+
     # Validate here rather than at resume time: a dead entry counted during
     # collection would inflate the spoken count and name a vanished directory.
-    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
     cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
     if [[ -z $sid || -z $cwd || ! -d $cwd ]]; then
-        ar_log "[retire] session=${sid:-?} cwd=${cwd:-none} — directory is gone"
-        (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/" 2>/dev/null
-                          rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+        # Deliberately does NOT delete a manual arm. An unmounted volume or a
+        # network share that has not reconnected looks identical to a deleted
+        # directory, and discarding something the user set by hand on that
+        # evidence cannot be undone. Marking it keeps the log quiet instead.
+        ar_log "[skip] session=${sid:-?} cwd=${cwd:-none} — directory not available"
+        if (( ! DRYRUN )) && [[ -n $sid ]]; then ar_mark_fired "$sid" "$reset" || true; fi
         continue
     fi
 
-    (( ${seen[(I)$sid]} )) && continue        # armed by both sensor and hand
+    (( ${seen[(Ie)$sid]} )) && continue       # armed by both sensor and hand
     seen+=("$sid")
+    reset_of[$sid]=$reset
     due+=("$f")
 done
 
@@ -55,6 +65,8 @@ if (( ! ${#due} )); then
     find "$STATE_DIR"  -maxdepth 1 -name '*.json' -mtime +7  -delete 2>/dev/null
     find "$MANUAL_DIR" -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
     find "$FIRED_DIR"  -maxdepth 1 -name '*.json' -mtime +30 -delete 2>/dev/null
+    # The fire marks are *.last, which the *.json sweep above never matched.
+    find "$FIRED_DIR"  -maxdepth 1 -name '*.last' -mtime +30 -delete 2>/dev/null
     exit 0
 fi
 
@@ -67,7 +79,12 @@ if [[ $AUTORESUME_RESUME == latest ]] && (( ${#due} > 1 )); then
     done
     for f in $due; do
         [[ $f == $newest ]] && continue
-        ar_log "[held] session=$(jq -r .session_id "$f" 2>/dev/null) — resume=latest, left armed"
+        # Marked, not merely logged. Left unmarked they are still armed and still
+        # due, so the next tick resumes the next one and the whole batch goes
+        # through a minute apart -- which is not "only the most recent" at all.
+        hsid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+        ar_log "[skipped] session=$hsid — resume=latest kept only the newest; arm it by hand to run it"
+        if (( ! DRYRUN )) && [[ -n $hsid ]]; then ar_mark_fired "$hsid" "${reset_of[$hsid]:-0}" || true; fi
     done
     due=("$newest")
 fi
@@ -90,6 +107,10 @@ ar_log "[fire] $n $plural due: $summary"
 
 # ---- resume each one ---------------------------------------------------------
 
+waiting=()          # typed but deliberately not submitted, or left untouched
+prefilled_n=0       # of those, how many actually had text typed into them
+untouched_n=0
+
 for f in $due; do
     sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
     cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
@@ -104,6 +125,14 @@ for f in $due; do
     [[ -f $live ]] || live="$f"
     age=$(( now - $(stat -f %m "$live" 2>/dev/null || printf 0) ))
 
+    # Recorded BEFORE acting. If the mark cannot be written -- fired/ present but
+    # unwritable, a full disk -- resuming anyway means resuming again every 60s
+    # forever, which is the bug this bookkeeping exists to prevent.
+    if (( ! DRYRUN )) && ! ar_mark_fired "$sid" "${reset_of[$sid]:-0}"; then
+        ar_log "[abort] session=$sid — cannot write $FIRED_DIR; refusing to resume unrecorded"
+        continue
+    fi
+
     route="" result="" mode="live-pane"
     if (( age < AUTORESUME_FRESH )) && [[ -n $tkind && -n $tident ]]; then
         route=pane
@@ -112,23 +141,39 @@ for f in $due; do
         else
             result=$(ar_send_live "$tkind" "$tident" "$AUTORESUME_PROMPT")
         fi
-        # A pane that has since been closed falls through to a fresh window.
-        [[ $result == sent || $result == dry-run ]] || {
-            ar_log "[pane-miss] session=$sid kind=$tkind result=$result — falling back to a new window"
-            route=""
-        }
+        case $result in
+            sent|dry-run) ;;
+            prefilled)
+                # Typed, not submitted. Deliberate -- see ar_send_live.
+                waiting+=("$(basename "$cwd") (press Enter)"); (( prefilled_n++ )) ;;
+            skipped|unsupported-prefill)
+                # The session is live, so opening a second window would run a
+                # duplicate process against the same session file. Leave it be.
+                waiting+=("$(basename "$cwd") (needs you)"); (( untouched_n++ )) ;;
+            *)
+                # A pane that has since been closed falls through to a fresh window.
+                ar_log "[pane-miss] session=$sid kind=$tkind result=$result — falling back to a new window"
+                route="" ;;
+        esac
     fi
 
     if [[ -z $route ]]; then
         route=window
         mode=$(ar_last_permission_mode "$transcript")
         ar_valid_mode "$mode" || {
-            [[ -n $mode ]] && ar_log "[note] session=$sid unknown permissionMode '$mode' — using settings default"
+            # `default` is a real mode the CLI writes but does not accept as a
+            # flag, so it is expected here -- logging it as "unknown" was noise.
+            [[ -n $mode && $mode != default ]] &&
+                ar_log "[note] session=$sid unknown permissionMode '$mode' — using settings default"
             mode="${mode:-default}"
         }
         kind=$(ar_pick_terminal "$AUTORESUME_TERMINAL")
-        # Prefer the terminal the session actually came from, when it is usable.
-        [[ $AUTORESUME_TERMINAL == auto && -n $tkind ]] && kind=$tkind
+        # Prefer the terminal the session came from, but only if it can still be
+        # driven. Trusting the recorded value blindly sent sessions straight to
+        # the headless fallback when tmux had exited, never trying a live iTerm.
+        if [[ $AUTORESUME_TERMINAL == auto && -n $tkind ]] && ar_terminal_usable "$tkind"; then
+            kind=$tkind
+        fi
         if (( DRYRUN )); then
             result="dry-run: [$kind] $(ar_build_cmd "$cwd" "$sid" "$mode" "$AUTORESUME_PROMPT")"
         else
@@ -142,6 +187,27 @@ for f in $due; do
     fi
 
     ar_log "[resume] session=$sid window=$window route=$route mode=$mode result=$result cwd=$cwd"
-    (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
-                      rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+
+    if (( ! DRYRUN )); then
+        mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
+        rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null
+    fi
 done
+
+if (( ${#waiting} )); then
+    w=${#waiting}
+    ws="${(j:, :)waiting}"
+    wp="session is"; (( w > 1 )) && wp="sessions are"
+    if (( DRYRUN )); then
+        print -r -- "[dry-run] would announce: $w $wp waiting on you ($ws)"
+    else
+        command -v say >/dev/null 2>&1 && { say "$w Claude $wp waiting on you." >/dev/null 2>&1 & }
+        # Only claim text was typed when it was. `notify`, and `prefill` on
+        # Terminal.app, leave the pane untouched -- and it may be sitting on the
+        # usage-limit menu, where an instructed Enter picks a highlighted option.
+        sub="Review the pane before continuing"
+        (( prefilled_n && ! untouched_n )) && sub="Typed, not submitted — press Enter"
+        osascript -e "display notification \"$(ar_osa_escape "$ws")\" with title \"Claude Code\" subtitle \"$sub\"" >/dev/null 2>&1
+    fi
+    ar_log "[waiting] $w $wp waiting on a keypress: $ws"
+fi
