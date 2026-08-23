@@ -16,6 +16,8 @@ SB="$REPO/test/.sandbox"
 
 pass=0
 fail=0
+NL='
+'
 
 ok() {
     pass=$((pass + 1))
@@ -33,7 +35,13 @@ group() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 reset_sandbox() {
     rm -rf "$SB"
     mkdir -p "$SB/.claude" "$SB/prefix" "$SB/bin"
-    printf '#!/bin/sh\ncat >/dev/null; printf "ORIGINAL-LINE"\n' >"$SB/.claude/sl.sh"
+    # Reads stdin and echoes something derived from it, so a sensor that fails to
+    # pass the payload through is detectable. Emits an ANSI escape and a trailing
+    # space too -- both were invisible to the previous comparison.
+    # shellcheck disable=SC2016  # writing a script file; $() must stay literal
+    printf '%s\n' '#!/bin/sh' \
+        'printf "\033[32mORIGINAL\033[0m model=%s \\n" "$(jq -r ".model.display_name // \"NONE\"")"' \
+        >"$SB/.claude/sl.sh"
     chmod +x "$SB/.claude/sl.sh"
     jq -n --arg c "$SB/.claude/sl.sh" \
         '{statusLine:{type:"command",command:$c,padding:1},effortLevel:"max",hooks:{Stop:[{hooks:[{type:"command",command:"say hi"}]}]}}' \
@@ -83,9 +91,16 @@ for variant in full norl bad; do
         norl) p=$(payload s-pass 10 9999999999 5 9999999999 | jq -c 'del(.rate_limits)') ;;
         bad) p='{"nonsense":true}' ;;
     esac
-    a=$(printf '%s' "$p" | "$SB/.claude/sl.sh" | od -An -c | tr -d ' \n')
-    b=$(printf '%s' "$p" | sensor | od -An -c | tr -d ' \n')
-    is "payload [$variant] passes through byte-identical" "$b" "$a"
+    # cmp on real bytes. The previous `od -An -c | tr -d ' '` deleted every space
+    # from od's own output, so "a b" and "ab" compared equal, as did "X" and "X ",
+    # and ESC collided with the literal characters 0,3,3.
+    printf '%s' "$p" | "$SB/.claude/sl.sh" >"$SB/want.bin" 2>/dev/null
+    printf '%s' "$p" | sensor >"$SB/got.bin" 2>/dev/null
+    if cmp -s "$SB/want.bin" "$SB/got.bin"; then
+        ok "payload [$variant] passes through byte-identical"
+    else
+        bad "payload [$variant] passes through byte-identical" "$(cmp "$SB/want.bin" "$SB/got.bin" 2>&1 | head -1)"
+    fi
 done
 
 # -----------------------------------------------------------------------------
@@ -118,12 +133,18 @@ esac
 if [ -f "$CLAUDE_AUTORESUME_DIR/notyet.json" ]; then ok "not-yet-due session left alone"; else bad "not-yet-due session left alone"; fi
 
 jq '.cwd="/no/such/place"' "$CLAUDE_AUTORESUME_DIR/due.json" >"$SB/t" && mv "$SB/t" "$CLAUDE_AUTORESUME_DIR/due.json"
-"$SB/prefix/bin/claude-autoresume-watch" --dry-run >/dev/null 2>&1
-if grep -c retire "$CLAUDE_AUTORESUME_DIR/watch.log" >/dev/null 2>&1; then
-    ok "vanished directory is retired, not counted"
+: >"$CLAUDE_AUTORESUME_DIR/watch.log"
+out=$("$SB/prefix/bin/claude-autoresume-watch" --dry-run 2>&1)
+if grep -q '\[skip\]' "$CLAUDE_AUTORESUME_DIR/watch.log"; then
+    ok "unavailable directory is skipped"
 else
-    bad "vanished directory is retired, not counted"
+    bad "unavailable directory is skipped" "$(cat "$CLAUDE_AUTORESUME_DIR/watch.log")"
 fi
+# The "not counted" half: it must not appear in the spoken batch at all.
+case "$out" in
+    *"would announce"*) bad "skipped session is not counted in the announcement" "$out" ;;
+    *) ok "skipped session is not counted in the announcement" ;;
+esac
 
 # -----------------------------------------------------------------------------
 group "resume=latest"
@@ -136,10 +157,170 @@ case "$out" in
     *"resuming 1 session"*) ok "only one session resumed" ;;
     *) bad "only one session resumed" "$out" ;;
 esac
-if grep -c held "$CLAUDE_AUTORESUME_DIR/watch.log" >/dev/null 2>&1; then
-    ok "the held session is logged, not silently dropped"
+if grep -q '\[skipped\]' "$CLAUDE_AUTORESUME_DIR/watch.log"; then
+    ok "the dropped session is logged, not silently discarded"
 else
-    bad "held session logged"
+    bad "the dropped session is logged" "$(cat "$CLAUDE_AUTORESUME_DIR/watch.log")"
+fi
+
+# -----------------------------------------------------------------------------
+group "fire-once"
+# The watcher used to write into fired/ but never read it. An idle session makes
+# no API call, so the sensor rewrites its state file 15s later with the same
+# stale rate_limits and it re-arms -- the same session then resumed every 60s
+# forever. These run for real (not --dry-run), with claude and the notifiers
+# stubbed, because the bookkeeping only executes outside dry-run.
+STUB="$SB/stub"
+mkdir -p "$STUB"
+for c in say osascript; do
+    printf '#!/bin/sh\nexit 0\n' >"$STUB/$c"
+    chmod +x "$STUB/$c"
+done
+printf '#!/bin/sh\necho "RESUMED $*" >> "%s/resumed.log"\n' "$SB" >"$STUB/fakeclaude"
+chmod +x "$STUB/fakeclaude"
+PATH="$STUB:$PATH"
+export PATH
+export AUTORESUME_TERMINAL=headless AUTORESUME_CLAUDE_BIN="$STUB/fakeclaude"
+
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
+sed -i '' 's/^AUTORESUME_RESUME=latest/AUTORESUME_RESUME=all/' "$CLAUDE_AUTORESUME_DIR/config.sh"
+NOW=$(date +%s)
+printf '%s' "$(payload once 100 $((NOW - 300)) 5 1900000000)" | sensor >/dev/null
+"$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
+first=$(grep -c '\[resume\]' "$CLAUDE_AUTORESUME_DIR/watch.log" 2>/dev/null || echo 0)
+is "a due session resumes once" "$first" "1"
+
+# The sensor re-arms it with the same stale reset, exactly as it would in life.
+printf '%s' "$(payload once 100 $((NOW - 300)) 5 1900000000)" | sensor >/dev/null
+"$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
+"$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
+again=$(grep -c '\[resume\]' "$CLAUDE_AUTORESUME_DIR/watch.log" 2>/dev/null || echo 0)
+is "and does not resume again on later ticks" "$again" "1"
+
+# A genuinely new window carries a different resets_at and must fire again.
+printf '%s' "$(payload once 100 $((NOW - 100)) 5 1900000000)" | sensor >/dev/null
+"$SB/prefix/bin/claude-autoresume-watch" >/dev/null 2>&1
+newwin=$(grep -c '\[resume\]' "$CLAUDE_AUTORESUME_DIR/watch.log" 2>/dev/null || echo 0)
+is "but a new reset window does fire" "$newwin" "2"
+
+# -----------------------------------------------------------------------------
+group "grace period"
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
+NOW=$(date +%s)
+printf '%s' "$(payload toosoon 100 $((NOW - 5)) 5 1900000000)" | sensor >/dev/null
+out=$("$SB/prefix/bin/claude-autoresume-watch" --dry-run 2>&1)
+case "$out" in
+    *"would announce"*) bad "a reset 5s ago waits for the grace period" "$out" ;;
+    *) ok "a reset 5s ago waits for the grace period" ;;
+esac
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json
+printf '%s' "$(payload ready 100 $((NOW - 120)) 5 1900000000)" | sensor >/dev/null
+out=$("$SB/prefix/bin/claude-autoresume-watch" --dry-run 2>&1)
+case "$out" in
+    *"would announce"*) ok "a reset 120s ago is past it" ;;
+    *) bad "a reset 120s ago is past it" "$out" ;;
+esac
+
+# -----------------------------------------------------------------------------
+group "permission mode replay"
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
+TR="$SB/transcript.jsonl"
+{
+    printf '%s\n' '{"type":"permission-mode","permissionMode":"plan"}'
+    printf '%s\n' '{"type":"permission-mode","permissionMode":"acceptEdits"}'
+} >"$TR"
+NOW=$(date +%s)
+payload replay 100 $((NOW - 300)) 5 1900000000 |
+    jq -c --arg t "$TR" '.transcript_path=$t' | sensor >/dev/null
+# Force the quit-session route. The sensor stamps term_kind from the ambient
+# shell, so run from iTerm this took the pane route -- which never reads a
+# transcript -- and the assertion passed or failed by luck of where it ran.
+jq -c '.term_kind="" | .term_ident=""' "$CLAUDE_AUTORESUME_DIR/replay.json" >"$SB/t" &&
+    mv "$SB/t" "$CLAUDE_AUTORESUME_DIR/replay.json"
+touch -t 200001010000 "$CLAUDE_AUTORESUME_DIR/replay.json"
+"$SB/prefix/bin/claude-autoresume-watch" --dry-run >/dev/null 2>&1
+if grep -q 'mode=acceptEdits' "$CLAUDE_AUTORESUME_DIR/watch.log"; then
+    ok "resumes in the mode the session last recorded, not the first"
+else
+    bad "resumes in the last recorded mode" "$(grep '\[resume\]' "$CLAUDE_AUTORESUME_DIR/watch.log")"
+fi
+
+# -----------------------------------------------------------------------------
+group "manual arm"
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/manual/* "$CLAUDE_AUTORESUME_DIR"/fired/*
+NOW=$(date +%s)
+printf '%s' "$(payload marm 12 $((NOW + 9000)) 5 1900000000)" | sensor >/dev/null
+ARM="$SB/prefix/bin/claude-autoresume-arm"
+
+# zsh's `shift 2` with one argument left errors without shifting, which spun forever.
+for flag in --session --in --at; do
+    if out=$(timeout 5 "$ARM" "$flag" 2>&1); then :; fi
+    case "$out" in
+        *"needs a value"*) ok "$flag with no value fails instead of hanging" ;;
+        *) bad "$flag with no value fails instead of hanging" "$out" ;;
+    esac
+done
+
+"$ARM" --session marm --in 2h30m >/dev/null 2>&1
+is "--in parses hours and minutes" \
+    "$(jq -r '.resets_at' "$CLAUDE_AUTORESUME_DIR/manual/marm.json" 2>/dev/null | awk -v n="$NOW" '{print int(($1-n)/60)}')" \
+    "150"
+
+# The whole reason manual arms live in their own directory.
+printf '%s' "$(payload marm 12 $((NOW + 9000)) 5 1900000000)" | sensor >/dev/null
+is "a manual arm survives the sensor rewriting its own state" \
+    "$(jq -r .armed "$CLAUDE_AUTORESUME_DIR/manual/marm.json" 2>/dev/null)" "true"
+
+"$ARM" --session marm --at 1700000000 >/dev/null 2>&1
+is "--at takes an exact epoch" \
+    "$(jq -r .resets_at "$CLAUDE_AUTORESUME_DIR/manual/marm.json" 2>/dev/null)" "1700000000"
+
+"$ARM" --session marm --disarm >/dev/null 2>&1
+if [ -f "$CLAUDE_AUTORESUME_DIR/manual/marm.json" ]; then
+    bad "--disarm removes the manual arm"
+else
+    ok "--disarm removes the manual arm"
+fi
+
+# A sensor-armed session: --disarm must actually stop it firing, not just claim to.
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
+printf '%s' "$(payload sarm 100 $((NOW - 300)) 5 1900000000)" | sensor >/dev/null
+"$ARM" --session sarm --disarm >/dev/null 2>&1
+out=$("$SB/prefix/bin/claude-autoresume-watch" --dry-run 2>&1)
+case "$out" in
+    *"would announce"*) bad "--disarm stops a sensor-armed session firing" "$out" ;;
+    *) ok "--disarm stops a sensor-armed session firing" ;;
+esac
+
+# -----------------------------------------------------------------------------
+group "kill switch"
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/*
+printf '%s' "$(payload killsw 100 $((NOW - 300)) 5 1900000000)" | sensor >/dev/null
+: >"$CLAUDE_AUTORESUME_DIR/DISABLED"
+out=$("$SB/prefix/bin/claude-autoresume-watch" --dry-run 2>&1)
+case "$out" in
+    *"would announce"*) bad "DISABLED stops everything" "$out" ;;
+    *) ok "DISABLED stops everything" ;;
+esac
+rm -f "$CLAUDE_AUTORESUME_DIR/DISABLED"
+
+# -----------------------------------------------------------------------------
+group "arming edge cases"
+rm -f "$CLAUDE_AUTORESUME_DIR"/*.json
+# A spent weekly window with no reset must not fall through and arm the 5-hour
+# one -- that fires every five hours into a limit that has not moved.
+payload nullwk 100 1700000000 100 1900000000 |
+    jq -c '.rate_limits.seven_day.resets_at=null' | sensor >/dev/null
+is "spent weekly with no reset does not arm the 5-hour window" \
+    "$(state_of nullwk '.armed')" "false"
+
+# Control characters are legal in a macOS path and illegal in a JSON string.
+payload ctrl 12 1900000000 5 1900000000 |
+    jq -c '.cwd="/tmp/we\tird\nname"' | sensor >/dev/null
+if jq empty "$CLAUDE_AUTORESUME_DIR/ctrl.json" 2>/dev/null; then
+    ok "a control character in cwd still yields valid JSON"
+else
+    bad "a control character in cwd still yields valid JSON"
 fi
 
 # -----------------------------------------------------------------------------
@@ -166,11 +347,22 @@ is "Terminal.app cannot prefill, so it refuses rather than submitting blind" \
 
 # -----------------------------------------------------------------------------
 group "hygiene"
+# Plant a file that is genuinely unparseable, which the previous version never did.
+printf 'this is not json\n' >"$CLAUDE_AUTORESUME_DIR/broken.json"
 out=$("$SB/prefix/bin/claude-autoresume-arm" --list 2>&1)
 case "$out" in
-    *null*) bad "arm --list shows no null rows" "$out" ;;
-    *) ok "arm --list shows no null rows" ;;
+    # Matches a null *session id*; plain "null" is also a legitimate percentage
+    # for a session whose payload carried no rate_limits yet.
+    "null  armed="* | *"${NL}null  armed="*) bad "arm --list skips an unparseable state file" "$out" ;;
+    *) ok "arm --list skips an unparseable state file" ;;
 esac
+out=$("$SB/prefix/bin/claude-autoresume-status" 2>&1)
+case "$out" in
+    *"parameter not set"*) bad "status survives an unparseable state file" "$out" ;;
+    *sessions*) ok "status survives an unparseable state file" ;;
+    *) bad "status survives an unparseable state file" "$out" ;;
+esac
+rm -f "$CLAUDE_AUTORESUME_DIR/broken.json"
 
 # -----------------------------------------------------------------------------
 group "re-install"
@@ -185,12 +377,12 @@ esac
 # -----------------------------------------------------------------------------
 group "uninstall"
 sh "$SB/prefix/uninstall.sh" >/dev/null 2>&1
-jq -S . "$SB/before.json" >"$SB/a"
-jq -S . "$SB/.claude/settings.json" >"$SB/b"
-if diff "$SB/a" "$SB/b" >/dev/null; then
+# cmp, because the README claims "byte-for-byte" and the previous jq -S compare
+# would have passed a compact-JSON restore.
+if cmp -s "$SB/before.json" "$SB/.claude/settings.json"; then
     ok "settings.json restored byte-for-byte (padding, hooks, refreshInterval)"
 else
-    bad "settings.json restored byte-for-byte" "$(diff "$SB/a" "$SB/b" | head -5)"
+    bad "settings.json restored byte-for-byte" "$(diff "$SB/before.json" "$SB/.claude/settings.json" | head -5)"
 fi
 if [ -d "$SB/prefix" ]; then bad "install prefix removed"; else ok "install prefix removed"; fi
 

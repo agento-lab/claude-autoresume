@@ -15,14 +15,29 @@
 # Everything here is best-effort. A failure must never cost you a status line.
 #
 set -uo pipefail
-source "${0:A:h}/../lib/common.sh" 2>/dev/null
+# Without common.sh the defaults below are unset, and under NO_UNSET this script
+# would abort mid-render and print nothing -- the one outcome its header promises
+# to avoid. Fall back to inert values and keep going.
+if ! source "${0:A:h}/../lib/common.sh" 2>/dev/null; then
+    AUTORESUME_ARM_PCT=101 STATE_DIR="" AUTORESUME_WRAPPED=""
+    ar_jnum() { printf 'null' }
+    ar_jstr() { printf '""' }
+    ar_now()  { date +%s }
+fi
 
 input=$(cat)
 
+# The array is split on newlines, so any field that itself contains one shifts
+# every field after it. A cwd with an embedded newline made resets_at read as 5 --
+# epoch 1970 -- which armed instantly and would have fired every tick forever.
+# Stripping control characters in jq keeps the mapping positional and turns a
+# pathological path into a visible failure (the watcher's -d test fails and logs)
+# instead of silent corruption.
 fields=("${(@f)$(printf '%s' "$input" | jq -r '
-    [ (.session_id // "")
-    , (.workspace.current_dir // .cwd // "")
-    , (.transcript_path // "")
+    def oneline: tostring | gsub("[\u0000-\u001f]"; "");
+    [ ((.session_id // "") | oneline)
+    , ((.workspace.current_dir // .cwd // "") | oneline)
+    , ((.transcript_path // "") | oneline)
     , (if .rate_limits.five_hour.used_percentage == null then ""
        else (.rate_limits.five_hour.used_percentage | tostring) end)
     , (if .rate_limits.five_hour.resets_at == null then ""
@@ -59,9 +74,12 @@ if [[ -n $sid ]]; then
     # must arm on the 7-day reset: arming on the 5-hour one would fire every
     # five hours into a limit that has not moved.
     window=null reset=null armed=false
-    if [[ $week_pct =~ ^[0-9]+(\.[0-9]+)?$ && $week_reset =~ ^[0-9]+$ ]] \
-       && (( week_pct >= AUTORESUME_ARM_PCT )); then
-        window='"seven_day"' reset=$week_reset armed=true
+    if [[ $week_pct =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( week_pct >= AUTORESUME_ARM_PCT )); then
+        # Spent weekly quota decides the outcome even when its reset is missing.
+        # Falling through to the elif would arm the 5-hour window and fire every
+        # five hours into a limit that has not moved -- the exact thing the
+        # weekly branch exists to prevent.
+        [[ $week_reset =~ ^[0-9]+$ ]] && { window='"seven_day"' reset=$week_reset armed=true }
     elif [[ $five_pct =~ ^[0-9]+(\.[0-9]+)?$ && $five_reset =~ ^[0-9]+$ ]] \
        && (( five_pct >= AUTORESUME_ARM_PCT )); then
         window='"five_hour"' reset=$five_reset armed=true
@@ -91,7 +109,10 @@ fi
 # ---- hand the payload on, byte for byte -------------------------------------
 
 if [[ -n $AUTORESUME_WRAPPED ]]; then
-    printf '%s' "$input" | eval "$AUTORESUME_WRAPPED"
+    # Run it in a subshell with our options dropped. Inheriting `set -u` and
+    # pipefail from line 17 would break status lines that render fine on their
+    # own -- an inline snippet referencing an unset variable would abort.
+    printf '%s' "$input" | ( set +u +o pipefail; eval "$AUTORESUME_WRAPPED" )
     exit 0
 fi
 

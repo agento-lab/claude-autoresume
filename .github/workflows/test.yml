@@ -3,6 +3,12 @@ on:
   pull_request:
   workflow_call:
 
+# Declared explicitly. Without a permissions block these inherit the caller's,
+# and Main grants contents:write + actions:write -- so `bun install` and a
+# curl'd shfmt binary were running with push rights they have no use for.
+permissions:
+  contents: read
+
 jobs:
   test:
     # macOS is not a preference here. The suite installs and uninstalls for

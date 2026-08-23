@@ -1,4 +1,4 @@
-.PHONY: help setup check-system install-deps setup-git-hooks dev lint lint-fix fmt security test ci install uninstall status logs update clean
+.PHONY: help setup check-system install-deps setup-git-hooks dev lint lint-fix fmt security test ci install uninstall uninstall-dev status logs update clean
 
 # Colors for output
 GREEN = \033[0;32m
@@ -57,7 +57,7 @@ install-deps: ## Install development dependencies (asdf tools + bun packages)
 	@echo ""
 	@if command -v asdf >/dev/null 2>&1; then \
 		for p in bun shellcheck shfmt; do asdf plugin add $$p 2>/dev/null || true; done; \
-		asdf install; \
+		asdf install || exit 1; \
 		echo "$(GREEN)✅ asdf tools installed$(NC)"; \
 	fi
 	@bun install
@@ -68,7 +68,7 @@ setup-git-hooks: ## Set up Git hooks with Husky
 	@echo "$(BLUE)🪝 Setting up Git hooks...$(NC)"
 	@echo ""
 	@if [ -d ".git" ]; then \
-		bun run prepare; \
+		bun run prepare || exit 1; \
 		echo "$(GREEN)✅ Git hooks configured with Husky$(NC)"; \
 	else \
 		echo "$(YELLOW)⚠️  Not a git repository. Skipping Git hooks setup.$(NC)"; \
@@ -76,7 +76,7 @@ setup-git-hooks: ## Set up Git hooks with Husky
 
 dev: ## Install live from this checkout (edits take effect immediately)
 	@echo "$(BLUE)🔧 Installing from $(REPO)...$(NC)"
-	@CLAUDE_AUTORESUME_PREFIX=$(REPO) sh ./install.sh
+	@CLAUDE_AUTORESUME_PREFIX="$(REPO)" sh ./install.sh
 	@echo "$(YELLOW)⚠️  The service now points at this checkout — do not move or delete it$(NC)"
 
 lint: ## Run code linter (shellcheck + shfmt on sh, zsh -n on zsh)
@@ -106,6 +106,9 @@ install: ## Install normally, into ~/.local/share
 
 uninstall: ## Remove it and restore your original status line
 	@sh ./uninstall.sh
+
+uninstall-dev: ## Undo a `make dev` install (prefix = this checkout)
+	@CLAUDE_AUTORESUME_PREFIX="$(REPO)" sh ./uninstall.sh
 
 status: ## Show what is armed right now
 	@claude-autoresume-status 2>/dev/null || ./bin/claude-autoresume-status

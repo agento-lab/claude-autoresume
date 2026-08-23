@@ -26,7 +26,7 @@ mkdir -p "$FIRED_DIR" "$MANUAL_DIR" 2>/dev/null || exit 0
 # render, so a hand-armed session would be un-armed within seconds; manual arms
 # live in $MANUAL_DIR, which the sensor never touches.
 
-due=(); seen=()
+due=(); seen=(); typeset -A reset_of
 for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
     armed=$(jq -r '.armed // false' "$f" 2>/dev/null) || continue
     [[ $armed == true ]] || continue
@@ -34,19 +34,29 @@ for f in "$STATE_DIR"/*.json(N) "$MANUAL_DIR"/*.json(N); do
     [[ $reset == <-> ]] || continue
     (( now >= reset + AUTORESUME_GRACE )) || continue
 
+    # Already acted on for this same reset. Without this the sensor's next
+    # rewrite re-arms the session with the same stale resets_at -- an idle
+    # session makes no API call, so the payload never refreshes -- and it fires
+    # again every 60s, forever.
+    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+    [[ -n $sid ]] && ar_already_fired "$sid" "$reset" && continue
+
     # Validate here rather than at resume time: a dead entry counted during
     # collection would inflate the spoken count and name a vanished directory.
-    sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
     cwd=$(jq -r '.cwd // empty' "$f" 2>/dev/null)
     if [[ -z $sid || -z $cwd || ! -d $cwd ]]; then
-        ar_log "[retire] session=${sid:-?} cwd=${cwd:-none} — directory is gone"
-        (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/" 2>/dev/null
-                          rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+        # Deliberately does NOT delete a manual arm. An unmounted volume or a
+        # network share that has not reconnected looks identical to a deleted
+        # directory, and discarding something the user set by hand on that
+        # evidence cannot be undone. Marking it keeps the log quiet instead.
+        ar_log "[skip] session=${sid:-?} cwd=${cwd:-none} — directory not available"
+        if (( ! DRYRUN )) && [[ -n $sid ]]; then ar_mark_fired "$sid" "$reset"; fi
         continue
     fi
 
-    (( ${seen[(I)$sid]} )) && continue        # armed by both sensor and hand
+    (( ${seen[(Ie)$sid]} )) && continue       # armed by both sensor and hand
     seen+=("$sid")
+    reset_of[$sid]=$reset
     due+=("$f")
 done
 
@@ -67,7 +77,12 @@ if [[ $AUTORESUME_RESUME == latest ]] && (( ${#due} > 1 )); then
     done
     for f in $due; do
         [[ $f == $newest ]] && continue
-        ar_log "[held] session=$(jq -r .session_id "$f" 2>/dev/null) — resume=latest, left armed"
+        # Marked, not merely logged. Left unmarked they are still armed and still
+        # due, so the next tick resumes the next one and the whole batch goes
+        # through a minute apart -- which is not "only the most recent" at all.
+        hsid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
+        ar_log "[skipped] session=$hsid — resume=latest kept only the newest; arm it by hand to run it"
+        if (( ! DRYRUN )) && [[ -n $hsid ]]; then ar_mark_fired "$hsid" "${reset_of[$hsid]}"; fi
     done
     due=("$newest")
 fi
@@ -138,8 +153,12 @@ for f in $due; do
             mode="${mode:-default}"
         }
         kind=$(ar_pick_terminal "$AUTORESUME_TERMINAL")
-        # Prefer the terminal the session actually came from, when it is usable.
-        [[ $AUTORESUME_TERMINAL == auto && -n $tkind ]] && kind=$tkind
+        # Prefer the terminal the session came from, but only if it can still be
+        # driven. Trusting the recorded value blindly sent sessions straight to
+        # the headless fallback when tmux had exited, never trying a live iTerm.
+        if [[ $AUTORESUME_TERMINAL == auto && -n $tkind ]] && ar_terminal_usable "$tkind"; then
+            kind=$tkind
+        fi
         if (( DRYRUN )); then
             result="dry-run: [$kind] $(ar_build_cmd "$cwd" "$sid" "$mode" "$AUTORESUME_PROMPT")"
         else
@@ -154,8 +173,11 @@ for f in $due; do
 
     ar_log "[resume] session=$sid window=$window route=$route mode=$mode result=$result cwd=$cwd"
 
-    (( DRYRUN )) || { mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
-                      rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null }
+    if (( ! DRYRUN )); then
+        ar_mark_fired "$sid" "${reset_of[$sid]}"
+        mv -f "$f" "$FIRED_DIR/${sid}.$(date +%Y%m%d-%H%M%S).json" 2>/dev/null
+        rm -f "$MANUAL_DIR/${sid}.json" 2>/dev/null
+    fi
 done
 
 if (( ${#waiting} )); then

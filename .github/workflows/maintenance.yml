@@ -3,6 +3,7 @@ name: maintenance
 permissions:
   issues: write
   pull-requests: write
+  contents: write # delete-branch: true cannot work without it
 
 on:
   schedule:

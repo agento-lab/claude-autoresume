@@ -1,9 +1,14 @@
 name: Main
 
 permissions:
-  id-token: write
   contents: write
   actions: write
+
+# Two quick merges would otherwise run `auto shipit` concurrently and race on
+# the tag. Releases are not cancelled in flight; the second waits.
+concurrency:
+  group: main-release
+  cancel-in-progress: false
 
 on:
   workflow_dispatch:
@@ -12,15 +17,15 @@ on:
       - main
 
 jobs:
+  # No `secrets: inherit` on these three -- they need no secret, and passing
+  # every organisation secret into a job that installs 486 npm packages is
+  # avoidable exposure.
   lint:
     uses: ./.github/workflows/lint.yml
-    secrets: inherit
   test:
     uses: ./.github/workflows/test.yml
-    secrets: inherit
   scan:
     uses: ./.github/workflows/scan.yml
-    secrets: inherit
   release:
     needs: [lint, test, scan]
     uses: ./.github/workflows/release.yml

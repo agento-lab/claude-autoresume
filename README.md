@@ -75,8 +75,8 @@ status line payload ─► sensor ─┬─► ~/.claude/autoresume/<session>.js
 **1. The sensor** (`bin/claude-autoresume-sensor`) is a status line wrapper. Install points
 `statusLine.command` at it; it records what it sees, then runs **whatever command was
 configured before** and prints that output unchanged. Your status line keeps working — it
-just has a passenger. Install also sets `refreshInterval: 15`, so the state stays fresh
-while a session sits idle.
+just has a passenger. Install also lowers `refreshInterval` to 15 if it is absent or higher, so the state stays
+fresh while a session sits idle; a shorter interval you already set is left alone.
 
 Per render it writes one file per session:
 
@@ -96,7 +96,10 @@ The file is rewritten in full every render, which is why a window that rolls ove
 session is open disarms itself with no extra bookkeeping.
 
 **2. The watcher** (`bin/claude-autoresume-watch`) runs once a minute and acts on anything
-whose `resets_at` has passed.
+whose `resets_at` passed at least `AUTORESUME_GRACE` seconds ago (60 by default, to clear the
+boundary). Acting on a session is recorded against that specific reset, so it cannot fire
+twice for the same window — without that it would re-fire every minute forever, since an idle
+session makes no API call and its `rate_limits` payload never refreshes.
 
 **3. The clock** is a launchd agent, `com.claude-autoresume`, on a 60-second
 `StartInterval`. launchd re-runs a missed interval job on wake, which is what makes
@@ -168,8 +171,8 @@ A `curl | sh` install should say exactly what it does. This one:
 |---|---|
 | `~/.local/share/claude-autoresume/` | the code |
 | `~/.local/bin/claude-autoresume-*` | symlinks to the three commands |
-| `~/.claude/settings.json` | `statusLine.command` → the sensor, `refreshInterval` → 15. **Backed up first**, and the original `statusLine` object is snapshotted so uninstall restores it exactly |
-| `~/.claude/autoresume/` | recorded state, config, log |
+| `~/.claude/settings.json` | `statusLine.command` → the sensor; `refreshInterval` lowered to 15 only if absent or higher. Copied to `settings.json.autoresume-backup.<timestamp>` first — **these accumulate and are never cleaned up**, not even by `--purge` — and the original `statusLine` object is snapshotted so uninstall restores it exactly |
+| `~/.claude/autoresume/` | state files, `config.sh`, `watch.log`, plus `manual/`, `fired/`, `backup/statusline.json`, launchd's stdout/stderr logs and any `headless-<session>.log` |
 | `~/Library/LaunchAgents/com.claude-autoresume.plist` | the 60-second timer |
 
 Nothing else is modified, and there are no network calls after install.
@@ -185,13 +188,20 @@ If `~/.local/bin` is not on your `PATH`, the installer says so — add
 claude-autoresume-status              # what's armed, when it fires, recent resumes
 claude-autoresume-arm --in 2h30m      # arm by hand
 claude-autoresume-arm --at 1787030000 # ... at an exact epoch second
-claude-autoresume-arm --list          # everything the sensor has recorded
-claude-autoresume-arm --disarm
+claude-autoresume-arm --session <id>  # target a specific session
+claude-autoresume-arm --list          # what the sensor has recorded
+claude-autoresume-arm --disarm        # stop a session firing this window
 touch ~/.claude/autoresume/DISABLED   # off, without uninstalling
 ```
 
-Use `--arm` when the sensor misses — for instance if your window tops out fractionally
-under 100%.
+Use `claude-autoresume-arm` when the sensor misses — for instance if your window tops out
+fractionally under 100%.
+
+`--list` reads the sensor's own state files, so a hand-armed session does not appear there;
+`claude-autoresume-status` shows both. `--disarm` removes a manual arm *and* records the
+current window as already handled, which is what actually stops a sensor-armed session
+firing — the sensor rewrites its own state every 15 s, so deleting anything there would be
+undone within seconds. A genuinely new window arms again as normal.
 
 ---
 
@@ -202,12 +212,14 @@ config file, so its values take precedence over the environment.
 
 | Setting | Default | Notes |
 |---|---|---|
-| `AUTORESUME_RESUME` | `all` | `all` resumes every cut-off session; `latest` resumes only the most recent and leaves the rest armed |
+| `AUTORESUME_RESUME` | `all` | `all` resumes every cut-off session; `latest` resumes only the most recent and drops the rest for that window (logged; arm them by hand to run them) |
 | `AUTORESUME_TERMINAL` | `auto` | `auto` reuses whichever terminal the session was in. Or force `iterm`, `terminal`, `tmux`, `headless` |
 | `AUTORESUME_LIVE_PANE` | `prefill` | For a session still open: `prefill` types the prompt without submitting, `type` submits it, `notify` leaves the pane alone. See [below](#the-usage-limit-menu) |
 | `AUTORESUME_PROMPT` | `continue` | what gets sent |
 | `AUTORESUME_ARM_PCT` | `100` | the % that counts as spent. Lower it if your window tops out just under |
 | `AUTORESUME_CLAUDE_BIN` | `claude` | the executable to resume with |
+| `AUTORESUME_GRACE` | `60` | seconds to wait past `resets_at` before acting |
+| `AUTORESUME_FRESH` | `90` | a state file younger than this means the session is still open |
 | `AUTORESUME_WRAPPED` | *(set by install)* | the status line command being passed through |
 
 ---
@@ -376,8 +388,11 @@ check reads as a failure. If you find yourself writing `cmd | grep -q`, don't.
 
 `test/run.sh` is not unit tests. It installs into a throwaway `HOME`, drives the real sensor
 and watcher, and uninstalls again, asserting `settings.json` comes back byte-for-byte. It is
-scoped entirely by `CLAUDE_CONFIG_DIR` / `CLAUDE_AUTORESUME_DIR` / `PREFIX` / `BINDIR` and
-never registers the launchd agent, so it cannot touch your real installation.
+scoped by `CLAUDE_CONFIG_DIR`, `CLAUDE_AUTORESUME_DIR`, `CLAUDE_AUTORESUME_PREFIX` and
+`CLAUDE_AUTORESUME_BINDIR`, and sets `CLAUDE_AUTORESUME_NO_SERVICE=1` so neither install nor
+uninstall touches launchd. That last part is load-bearing: `uninstall.sh` used to ignore the
+flag, and because launchctl cannot be redirected by a fake `HOME`, every `make test` run
+silently unloaded and deleted the developer's own agent.
 
 Anything that opens a window or speaks runs under `--dry-run`.
 
@@ -407,8 +422,9 @@ Every merge to `main` runs `.github/workflows/main.yml`:
 ```
 push to main ─┬─► lint   (shellcheck + shfmt + zsh -n, commit messages)
               ├─► test   (integration suite, macOS runner)
-              └─► scan   (dependency advisories, installer sanity)
-                      └─► release  (auto shipit — tag + GitHub release + CHANGELOG)
+              ├─► scan   (dependency advisories, installer sanity)
+              │
+              └─ all three must pass ─► release  (auto shipit — tag, release, CHANGELOG)
 ```
 
 `lint`, `test` and `scan` also run on their own for pull requests.
