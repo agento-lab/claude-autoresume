@@ -18,7 +18,7 @@ CONFIG_FILE="${CLAUDE_AUTORESUME_CONFIG:-$AUTORESUME_DIR/config.sh}"
 WRAPPED_FILE="${CLAUDE_AUTORESUME_WRAPPED_FILE:-$AUTORESUME_DIR/wrapped.sh}"
 [[ -r $WRAPPED_FILE ]] && source "$WRAPPED_FILE"
 
-# Defaults, applied only where the config file left a gap.
+# Defaults, applied only where config.sh (and wrapped.sh, above) left a gap.
 : ${AUTORESUME_ARM_PCT:=100}          # window % that counts as spent
 : ${AUTORESUME_PROMPT:=continue}      # what to send on resume
 : ${AUTORESUME_RESUME:=all}           # all | latest
@@ -27,7 +27,7 @@ WRAPPED_FILE="${CLAUDE_AUTORESUME_WRAPPED_FILE:-$AUTORESUME_DIR/wrapped.sh}"
 : ${AUTORESUME_CLAUDE_BIN:=claude}
 : ${AUTORESUME_GRACE:=60}             # seconds past reset before acting
 : ${AUTORESUME_FRESH:=90}             # state file younger than this => still open
-: ${AUTORESUME_WRAPPED:=}             # status line command we took over from
+: ${AUTORESUME_WRAPPED:=}             # status line we took over; set in wrapped.sh
 
 STATE_DIR="$AUTORESUME_DIR"
 MANUAL_DIR="$AUTORESUME_DIR/manual"
@@ -56,7 +56,9 @@ ar_already_fired() {
 ar_mark_fired() {
     local mark; mark=$(ar_fired_mark "$1")
     mkdir -p "$FIRED_DIR" 2>/dev/null || return 1
-    print -r -- "$2" > "$mark" 2>/dev/null || return 1
+    # Braced: zsh reports a failed redirection from the shell itself, outside the
+    # command's own 2>/dev/null, so without this the permission error leaks.
+    { print -r -- "$2" > "$mark" } 2>/dev/null || return 1
     [[ -s $mark ]]
 }
 
@@ -64,7 +66,8 @@ ar_log() { print -r -- "$(date '+%Y-%m-%dT%H:%M:%S%z') $*" >> "$LOG_FILE" 2>/dev
 
 ar_now() { zmodload zsh/datetime 2>/dev/null && print -r -- $EPOCHSECONDS || date +%s }
 
-# JSON emitters. Small enough to hand-roll, and the sensor cannot afford jq.
+# JSON emitters. Small enough to hand-roll, and the sensor already forks jq once
+# per render to parse the payload -- a second fork per field is what it cannot afford.
 ar_jnum() { [[ $1 =~ ^[0-9]+(\.[0-9]+)?$ ]] && printf '%s' "$1" || printf 'null' }
 # Control characters are legal in a macOS path and illegal in a JSON string. Left
 # unescaped they produce a state file jq rejects, and the watcher then skips that
@@ -73,6 +76,15 @@ ar_jstr() {
     local s=${1//\\/\\\\}
     s=${s//\"/\\\"}
     s=${s//$'\n'/\\n}; s=${s//$'\r'/\\r}; s=${s//$'\t'/\\t}
+    # jq rejects every raw C0 character, not just the three with short escapes,
+    # and a state file it cannot parse means that session is skipped forever
+    # without a log line. Guarded so the normal path forks nothing.
+    if [[ $s == *[$'\x01'-$'\x08'$'\x0b'$'\x0c'$'\x0e'-$'\x1f']* ]]; then
+        local c
+        for c in {1..8} 11 12 {14..31}; do
+            s=${s//${(#)c}/$(printf '\\u%04x' $c)}
+        done
+    fi
     printf '"%s"' "$s"
 }
 

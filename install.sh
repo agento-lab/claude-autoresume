@@ -32,9 +32,9 @@ die() {
     exit 1
 }
 
-# Single-quote a value for safe inclusion in config.sh. The wrapped status line
-# is arbitrary user shell, and one apostrophe in it -- `awk '{print $1}'` is
-# enough -- produced a config.sh that fails to parse. common.sh sources that
+# Single-quote a value for safe inclusion in a sourced file. The wrapped status
+# line is arbitrary user shell, and one apostrophe in it -- `awk '{print $1}'` is
+# enough -- produced a wrapped.sh that fails to parse. common.sh sources that
 # file on every status-line render, so the breakage is continuous and silent.
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -79,7 +79,8 @@ printf '\n\033[1mclaude-autoresume\033[0m\n\n'
 # ---- preflight ---------------------------------------------------------------
 
 [ "$(uname -s)" = "Darwin" ] || die "macOS only for now (this release uses launchd, osascript and BSD stat).
-Linux support is tracked in the README; the platform-specific pieces are isolated in lib/."
+Linux support is noted in the README. The terminal adapters are isolated in lib/, but
+launchd, osascript and BSD stat/date are still spread through bin/ and the installer."
 
 for dep in jq zsh osascript; do
     command -v "$dep" >/dev/null 2>&1 || {
@@ -127,8 +128,9 @@ fi
 mkdir -p "$PREFIX" "$BINDIR" "$STATE/manual" "$STATE/fired"
 
 # `make dev` installs with PREFIX pointing at the checkout so edits are live.
-# Without this guard the next two lines would delete the repo's own bin/ and
-# lib/ and then try to copy them from the hole they just made.
+# Without this guard the staged install below would rm -rf the repo's own bin/,
+# lib/ and share/ and then move copies back on top -- churn at best, and
+# outright destructive before the staging was added.
 SRC_REAL=$(CDPATH='' cd -- "$SRC" && pwd -P)
 PREFIX_REAL=$(CDPATH='' cd -- "$PREFIX" && pwd -P)
 if [ "$SRC_REAL" = "$PREFIX_REAL" ]; then
@@ -200,13 +202,13 @@ read_wrapped() {
     ) || true
 }
 WRAPPED=$(read_wrapped "$STATE/wrapped.sh")
-[ -n "$WRAPPED" ] || WRAPPED=$(read_wrapped "$STATE/config.sh") # pre-0.1.2 layout
+[ -n "$WRAPPED" ] || WRAPPED=$(read_wrapped "$STATE/config.sh") # legacy layout: the value used to live in config.sh
 case "$CURRENT" in
     *claude-autoresume-sensor*)
         # Already wrapped. Never record ourselves as the wrapped command --
         # that would make the sensor invoke itself forever.
         #
-        # If config.sh is gone (an aborted install, a deleted state dir) the
+        # If wrapped.sh is gone (an aborted install, a deleted state dir) the
         # snapshot still knows what was there. Without this the recovery path
         # silently adopts "no status line" and the user's is lost for good.
         if [ -z "$WRAPPED" ] && [ -f "$STATE/backup/statusline.json" ]; then
@@ -243,7 +245,15 @@ if [ ! -f "$STATE/backup/statusline.json" ] || [ -n "${CURRENT#*claude-autoresum
         *) jq '.statusLine // null' "$SETTINGS" >"$STATE/backup/statusline.json" ;;
     esac
 fi
-[ -f "$STATE/backup/statusline.json" ] || jq '.statusLine // null' "$SETTINGS" >"$STATE/backup/statusline.json"
+# Guarded by the same rule as the wrapped command: never record ourselves. With
+# the state dir wiped and settings already pointing at the sensor, an unguarded
+# write snapshotted the sensor's own path -- and uninstall then "restored" the
+# status line to a binary it deletes moments later.
+case "$CURRENT" in
+    *claude-autoresume-sensor*) ;;
+    *) [ -f "$STATE/backup/statusline.json" ] ||
+        jq '.statusLine // null' "$SETTINGS" >"$STATE/backup/statusline.json" ;;
+esac
 
 tmp=$(mktemp)
 jq --arg cmd "$SENSOR" '
@@ -307,7 +317,7 @@ AUTORESUME_TERMINAL=auto
 #   notify  - leave the pane alone entirely
 #
 # A spent limit can leave a menu on screen (upgrade / add funds / stop and wait)
-# where Enter takes the highlighted line. Worst case for $(type) is an extra
+# where Enter takes the highlighted line. Worst case for type is an extra
 # browser tab or a confirmation dialog; one Enter cannot complete a purchase.
 # Set prefill if you would rather press Enter yourself.
 AUTORESUME_LIVE_PANE=type

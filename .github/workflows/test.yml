@@ -4,8 +4,7 @@ on:
   workflow_call:
 
 # Declared explicitly. Without a permissions block these inherit the caller's,
-# and Main grants contents:write + actions:write -- so `bun install` and a
-# curl'd shfmt binary were running with push rights they have no use for.
+# and Main grants contents:write + actions:write -- read is all this job needs.
 permissions:
   contents: read
 

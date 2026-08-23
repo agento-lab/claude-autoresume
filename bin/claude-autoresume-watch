@@ -107,7 +107,9 @@ ar_log "[fire] $n $plural due: $summary"
 
 # ---- resume each one ---------------------------------------------------------
 
-waiting=()      # typed but deliberately not submitted, or left untouched
+waiting=()          # typed but deliberately not submitted, or left untouched
+prefilled_n=0       # of those, how many actually had text typed into them
+untouched_n=0
 
 for f in $due; do
     sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
@@ -143,11 +145,11 @@ for f in $due; do
             sent|dry-run) ;;
             prefilled)
                 # Typed, not submitted. Deliberate -- see ar_send_live.
-                waiting+=("$(basename "$cwd") (press Enter)") ;;
+                waiting+=("$(basename "$cwd") (press Enter)"); (( prefilled_n++ )) ;;
             skipped|unsupported-prefill)
                 # The session is live, so opening a second window would run a
                 # duplicate process against the same session file. Leave it be.
-                waiting+=("$(basename "$cwd") (needs you)") ;;
+                waiting+=("$(basename "$cwd") (needs you)"); (( untouched_n++ )) ;;
             *)
                 # A pane that has since been closed falls through to a fresh window.
                 ar_log "[pane-miss] session=$sid kind=$tkind result=$result — falling back to a new window"
@@ -159,7 +161,10 @@ for f in $due; do
         route=window
         mode=$(ar_last_permission_mode "$transcript")
         ar_valid_mode "$mode" || {
-            [[ -n $mode ]] && ar_log "[note] session=$sid unknown permissionMode '$mode' — using settings default"
+            # `default` is a real mode the CLI writes but does not accept as a
+            # flag, so it is expected here -- logging it as "unknown" was noise.
+            [[ -n $mode && $mode != default ]] &&
+                ar_log "[note] session=$sid unknown permissionMode '$mode' — using settings default"
             mode="${mode:-default}"
         }
         kind=$(ar_pick_terminal "$AUTORESUME_TERMINAL")
@@ -197,7 +202,12 @@ if (( ${#waiting} )); then
         print -r -- "[dry-run] would announce: $w $wp waiting on you ($ws)"
     else
         command -v say >/dev/null 2>&1 && { say "$w Claude $wp waiting on you." >/dev/null 2>&1 & }
-        osascript -e "display notification \"$(ar_osa_escape "$ws")\" with title \"Claude Code\" subtitle \"Typed, not submitted — press Enter\"" >/dev/null 2>&1
+        # Only claim text was typed when it was. `notify`, and `prefill` on
+        # Terminal.app, leave the pane untouched -- and it may be sitting on the
+        # usage-limit menu, where an instructed Enter picks a highlighted option.
+        sub="Review the pane before continuing"
+        (( prefilled_n && ! untouched_n )) && sub="Typed, not submitted — press Enter"
+        osascript -e "display notification \"$(ar_osa_escape "$ws")\" with title \"Claude Code\" subtitle \"$sub\"" >/dev/null 2>&1
     fi
     ar_log "[waiting] $w $wp waiting on a keypress: $ws"
 fi

@@ -5,15 +5,13 @@ GREEN = \033[0;32m
 YELLOW = \033[1;33m
 RED = \033[0;31m
 BLUE = \033[0;34m
-NC = \033[0m # No Color
+# No colour. Kept on its own line: make would fold a trailing comment into the value.
+NC = \033[0m
 
 # Default target
 .DEFAULT_GOAL := help
 
 REPO := $(shell pwd)
-
-# Tools this repo cannot work without. Format: <command>:<how to get it>
-REQUIRED_TOOLS := bun:asdf zsh:preinstalled-on-macos jq:brew shellcheck:asdf shfmt:asdf
 
 help: ## Show this help message
 	@echo "$(BLUE)claude-autoresume Development Commands$(NC)"
@@ -67,7 +65,7 @@ setup-git-hooks: ## Set up Git hooks with Husky
 	@echo ""
 	@echo "$(BLUE)🪝 Setting up Git hooks...$(NC)"
 	@echo ""
-	@if [ -d ".git" ]; then \
+	@if git rev-parse --git-dir >/dev/null 2>&1; then \
 		bun run prepare || exit 1; \
 		echo "$(GREEN)✅ Git hooks configured with Husky$(NC)"; \
 	else \

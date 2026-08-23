@@ -42,6 +42,9 @@ else
         # and under NO_UNSET the next line would abort the whole listing --
         # or worse, silently reuse the previous file's values.
         sid="" armed="" reset=0 five=0 week=0 cwd="" win="-" kind="-"
+        # eval is safe here only because of jq's @sh, which single-quotes every
+        # interpolated value -- so a cwd containing `; rm -rf ~` arrives as data.
+        # Do not switch this to plain string interpolation.
         eval "$(jq -r '@sh "sid=\(.session_id) armed=\(.armed) reset=\(.resets_at // 0) five=\(.five_hour.used_percentage // 0 | round) week=\(.seven_day.used_percentage // 0 | round) cwd=\(.cwd) win=\(.armed_window // "-") kind=\(.term_kind // "-")"' "$f" 2>/dev/null)"
         [[ -z $sid || $sid == null ]] && continue
         (( ${shown[(I)$sid]} )) && continue

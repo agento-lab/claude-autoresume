@@ -1,12 +1,13 @@
 #!/bin/sh
 #
-# Integration tests. No mocks: this installs into a throwaway HOME, drives the
-# real sensor and watcher, and uninstalls again.
+# Integration tests. This installs into a throwaway HOME, drives the real sensor
+# and watcher, and uninstalls again.
 #
 # Everything is scoped by CLAUDE_CONFIG_DIR / CLAUDE_AUTORESUME_DIR / PREFIX /
 # BINDIR, and the launchd agent is never registered, so your real installation
-# is untouched. The watcher runs in --dry-run wherever a live run would open a
-# window or speak.
+# is untouched. Most groups run the watcher with --dry-run. The fire-once group
+# has to run for real, because the bookkeeping only executes outside dry-run, so
+# it stubs claude, say and osascript on PATH instead.
 #
 set -eu
 
@@ -211,7 +212,8 @@ else
     printf "AUTORESUME_CLAUDE_BIN='%s'\n" "$STUB/fakeclaude" >>"$CLAUDE_AUTORESUME_DIR/config.sh"
 fi
 is "the stub claude is the one actually configured" \
-    "$(zsh -c "CLAUDE_AUTORESUME_DIR='$CLAUDE_AUTORESUME_DIR' source '$REPO/lib/common.sh'; print -r -- \$AUTORESUME_CLAUDE_BIN")" \
+    "$(zsh -c 'CLAUDE_AUTORESUME_DIR=$1 source $2/lib/common.sh; print -r -- $AUTORESUME_CLAUDE_BIN' \
+        zsh "$CLAUDE_AUTORESUME_DIR" "$REPO")" \
     "$STUB/fakeclaude"
 
 rm -f "$CLAUDE_AUTORESUME_DIR"/*.json "$CLAUDE_AUTORESUME_DIR"/fired/* "$CLAUDE_AUTORESUME_DIR/watch.log"
@@ -390,20 +392,23 @@ fi
 # -----------------------------------------------------------------------------
 group "live-pane safety"
 # A spent limit can leave a select menu on screen whose options include paid
-# ones, and Enter takes whichever line is highlighted. Nothing may submit into a
-# live pane unless the user has explicitly opted in.
+# ones, and Enter takes whichever line is highlighted. The default submits anyway
+# -- unattended continuation is the point, and the exposure is bounded (see
+# lib/terminals.sh). What these pin down is that the opt-outs still work, and
+# that no mode submits blind where it cannot prefill.
 # CLAUDE_AUTORESUME_CONFIG is pointed away from the sandbox on purpose: the
 # installed config.sh assigns AUTORESUME_LIVE_PANE outright, and a config file
 # is meant to win over the environment, so the env alone would not take here.
 probe() {
-    zsh -c "AUTORESUME_LIVE_PANE=$1
+    zsh -c 'AUTORESUME_LIVE_PANE=$1
             CLAUDE_AUTORESUME_CONFIG=/nonexistent
-            source '$REPO/lib/common.sh'
-            source '$REPO/lib/terminals.sh'
-            ar_send_live $2 some-ident 'continue' 2>/dev/null"
+            source $3/lib/common.sh
+            source $3/lib/terminals.sh
+            ar_send_live $2 some-ident continue 2>/dev/null' zsh "$1" "$2" "$REPO"
 }
 is "the default submits, so an open session continues unattended" \
-    "$(zsh -c "unset AUTORESUME_LIVE_PANE; CLAUDE_AUTORESUME_CONFIG=/nonexistent source '$REPO/lib/common.sh'; print -r -- \$AUTORESUME_LIVE_PANE")" \
+    "$(zsh -c 'unset AUTORESUME_LIVE_PANE; CLAUDE_AUTORESUME_CONFIG=/nonexistent source $1/lib/common.sh; print -r -- $AUTORESUME_LIVE_PANE' \
+        zsh "$REPO")" \
     "type"
 is "notify mode touches nothing" "$(probe notify tmux)" "skipped"
 is "Terminal.app cannot prefill, so it refuses rather than submitting blind" \

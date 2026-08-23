@@ -132,19 +132,19 @@ ar_build_cmd() {
     print -r -- "$cmd"
 }
 
-# Which terminal to open when the recorded one is gone or was never known.
 # Whether a terminal can actually be driven right now, as opposed to whether the
 # session was recorded under it. A tmux server that has since exited, or iTerm
 # uninstalled since, both need to fall back rather than be trusted.
 ar_terminal_usable() {
     case $1 in
         tmux) ar_tmux_alive ;;
-        iterm) [[ -d /Applications/iTerm.app ]] ;;
+        iterm) [[ -d /Applications/iTerm.app || -d $HOME/Applications/iTerm.app ]] ;;
         apple_terminal|headless) return 0 ;;
         *) return 1 ;;
     esac
 }
 
+# Which terminal to open when the recorded one is gone or was never known.
 ar_pick_terminal() {
     local preferred=$1
     # `terminal` is what the config documents and what a user would type;
@@ -153,7 +153,7 @@ ar_pick_terminal() {
     [[ $preferred == terminal ]] && preferred=apple_terminal
     if [[ $preferred != auto && -n $preferred ]]; then print -r -- "$preferred"; return; fi
     ar_tmux_alive                       && { print -r -- tmux; return }
-    [[ -d /Applications/iTerm.app ]]    && { print -r -- iterm; return }
+    [[ -d /Applications/iTerm.app || -d $HOME/Applications/iTerm.app ]] && { print -r -- iterm; return }
     [[ -d /System/Applications/Utilities/Terminal.app ]] && { print -r -- apple_terminal; return }
     print -r -- headless
 }

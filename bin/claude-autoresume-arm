@@ -2,7 +2,8 @@
 #
 # claude-autoresume-arm -- arm a session by hand.
 #
-# The sensor arms automatically once a usage window reads 100%. This is the
+# The sensor arms automatically once a usage window reads spent
+# (100% by default; see AUTORESUME_ARM_PCT). This is the
 # override for when it doesn't: the window tops out a hair under, or you simply
 # want a resume at a time of your choosing.
 #
@@ -31,7 +32,9 @@ while (( $# )); do
         --at)      need "$@"; at=$2; shift 2 ;;
         --disarm)  mode=disarm; shift ;;
         --list)    mode=list; shift ;;
-        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        # Bounded by the end of the header block rather than a fixed line
+        # number, which had rotted and was printing three lines of source.
+        -h|--help) sed -n '2,/^[^#]/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         *) print -u2 -- "unknown argument: $1"; exit 2 ;;
     esac
 done
@@ -76,8 +79,19 @@ if [[ $mode == disarm ]]; then
     [[ -f $MANUAL_DIR/${tsid}.json ]] && had_manual=1
     rm -f "$MANUAL_DIR/${tsid}.json" 2>/dev/null
     treset=$(jq -r '.resets_at // empty' "$target" 2>/dev/null)
-    [[ $treset == <-> ]] && ar_mark_fired "$tsid" "$treset"
-    if (( had_manual )) || [[ $treset == <-> ]]; then
+    marked=0
+    if [[ $treset == <-> ]]; then
+        # The watcher already refuses to act on an unwritable mark; arm reported
+        # success regardless, leaving a sensor-armed session to resume anyway.
+        if ar_mark_fired "$tsid" "$treset"; then
+            marked=1
+        else
+            print -u2 -- "removed the manual arm, but could not record the disarm in $FIRED_DIR"
+            print -u2 -- "$tsid is still armed by the sensor and will resume"
+            exit 1
+        fi
+    fi
+    if (( had_manual || marked )); then
         print -r -- "disarmed $tsid"
     else
         print -r -- "$tsid was not armed"

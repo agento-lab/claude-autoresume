@@ -5,7 +5,8 @@
 #   ./uninstall.sh            remove the tool, keep your recorded state
 #   ./uninstall.sh --purge    remove the state directory too
 #
-# Your original status line command is put back exactly as it was.
+# Your original status line is put back from the snapshot, padding and all --
+# or, if the snapshot is gone, at least the command itself.
 #
 set -eu
 
@@ -35,8 +36,8 @@ else
     ok "service unloaded"
 fi
 
-# Put the status line back. The wrapped command is the only record of what was
-# there before, so read it before anything gets deleted.
+# Put the status line back. First: is it even ours? Restoring over a status line
+# we never wrapped is how the old code silently ate people's own settings.
 CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || printf '')
 case "$CURRENT" in
     *claude-autoresume-sensor*) MINE=1 ;;
@@ -68,7 +69,7 @@ elif [ -f "$SETTINGS" ]; then
     done
     tmp=$(mktemp)
     BACKUP="$STATE/backup/statusline.json"
-    [ -s "$BACKUP" ] || BACKUP="$STATE/statusline.backup.json" # pre-0.1.1 layout
+    [ -s "$BACKUP" ] || BACKUP="$STATE/statusline.backup.json" # legacy layout: the snapshot used to sit in $STATE itself
     if [ -s "$BACKUP" ]; then
         # Restore the object exactly as it was, padding and refreshInterval too.
         if [ "$(cat "$BACKUP")" = "null" ]; then

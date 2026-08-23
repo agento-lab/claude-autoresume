@@ -18,7 +18,7 @@ on:
 
 jobs:
   # No `secrets: inherit` on these three -- they need no secret, and passing
-  # every organisation secret into a job that installs 486 npm packages is
+  # every organisation secret into a job that installs 500-odd npm packages is
   # avoidable exposure.
   lint:
     uses: ./.github/workflows/lint.yml

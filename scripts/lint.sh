@@ -9,8 +9,9 @@
 #   bin/*, lib/*.sh      zsh -- uses ${(@f)}, (N) glob qualifiers, ${arr[(I)x]}
 #   install.sh, scripts/ POSIX sh -- so `curl | sh` works on any machine
 #
-# Neither of those tools supports zsh, so running them over bin/ would produce
-# nothing but false positives. zsh files get `zsh -n` instead, which is a real
+# Those two tools -- shellcheck and shfmt -- do not support zsh, so running them
+# over bin/ would produce nothing but false positives. (A comment beginning with
+# the word "shellcheck" is parsed as a directive, hence the phrasing.) zsh files get `zsh -n` instead, which is a real
 # parse and catches the class of error that actually bites here (this project has
 # shipped an unset `extendedglob` backreference, and a `print` flag collision).
 # Files are classified by shebang, not by extension.
