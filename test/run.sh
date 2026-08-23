@@ -57,6 +57,26 @@ reset_sandbox() {
 
 sensor() { "$SB/prefix/bin/claude-autoresume-sensor"; }
 
+# `timeout` is GNU coreutils. It is not on a stock macOS -- it was present on the
+# author's machine via Homebrew and absent on the CI runner, so a test that
+# depended on it passed locally and failed in CI. Run it in the background and
+# kill it if it outlives the limit instead.
+with_limit() {
+    _lim=$1
+    shift
+    "$@" >"$SB/limited.out" 2>&1 &
+    _p=$!
+    (
+        sleep "$_lim"
+        kill -9 "$_p" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    _k=$!
+    if wait "$_p" 2>/dev/null; then _rc=0; else _rc=$?; fi
+    kill -9 "$_k" 2>/dev/null || true
+    cat "$SB/limited.out"
+    return "$_rc"
+}
+
 # Feed one payload to the sensor and return the named field from its state file.
 state_of() { jq -r "$2" "$CLAUDE_AUTORESUME_DIR/$1.json" 2>/dev/null; }
 
@@ -254,7 +274,7 @@ ARM="$SB/prefix/bin/claude-autoresume-arm"
 
 # zsh's `shift 2` with one argument left errors without shifting, which spun forever.
 for flag in --session --in --at; do
-    if out=$(timeout 5 "$ARM" "$flag" 2>&1); then :; fi
+    out=$(with_limit 5 "$ARM" "$flag") || true
     case "$out" in
         *"needs a value"*) ok "$flag with no value fails instead of hanging" ;;
         *) bad "$flag with no value fails instead of hanging" "$out" ;;
