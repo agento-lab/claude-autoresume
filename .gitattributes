@@ -1,8 +1,8 @@
 # See https://git-scm.com/docs/gitattributes for more about git attribute files.
 
-# Everything here is a shell script. A CRLF checkout breaks the shebang line
-# outright -- `/usr/bin/env zsh\r` is not a program -- so line endings are not
-# a style question in this repo.
+# Shell scripts need LF: a CRLF checkout breaks the shebang outright, because
+# `/usr/bin/env zsh\r` is not a program. Line endings are not a style question
+# here. The wildcard normalises every other text file in the repo too.
 * text=auto eol=lf
 
 # Generated, not authored: keep them out of language stats and diffs.

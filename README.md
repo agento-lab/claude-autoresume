@@ -405,7 +405,7 @@ a contained change.
 | | language | checked with |
 |---|---|---|
 | `bin/*`, `lib/*.sh` | zsh — `${(@f)}`, `(N)` glob qualifiers, `${arr[(I)x]}` | `zsh -n` |
-| `install.sh`, `scripts/`, `test/` | POSIX sh, so `curl \| sh` works anywhere | shellcheck + shfmt |
+| `install.sh`, `scripts/`, `test/` | POSIX sh, so `curl \| sh` runs under any shell — installation is still macOS-only | shellcheck + shfmt |
 
 Neither shellcheck nor shfmt supports zsh, so pointing them at `bin/` produces only false
 positives. `scripts/lint.sh` routes each file by its **shebang**, not its extension.
